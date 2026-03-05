@@ -3,3 +3,4 @@ venv
 __pycache__
 *.pyc
 results/app_log_*.txt
+results
