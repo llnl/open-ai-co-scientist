@@ -1,0 +1,26 @@
+Local Open AI Co-Scientist run for presentation example
+
+Date: 2026-06-24
+Model: openai/gpt-4o-mini via OpenRouter
+Research goal:
+Develop practical ways to improve rooftop solar panel efficiency and durability.
+
+Top ranked hypotheses:
+
+1. Integrating Thermal Management Systems with Solar Panels
+Elo: 1214.60
+Novelty: MEDIUM
+Feasibility: HIGH
+Summary: Use phase change materials to regulate panel temperature, absorb excess heat during peak sunlight, and release it during cooler periods. This may improve efficiency and slow thermal degradation.
+
+2. Combined: Integrating Thermal Management Systems with Solar Panels and Hybrid Coating for Enhanced Durability and Light Absorption
+Elo: 1200.74
+Novelty: HIGH
+Feasibility: MEDIUM
+Summary: Combine thermal management with a dual-function coating that reduces reflection and adds self-cleaning behavior to limit dirt and debris buildup.
+
+3. Hybrid Coating for Enhanced Durability and Light Absorption
+Elo: 1184.66
+Novelty: HIGH
+Feasibility: MEDIUM
+Summary: Develop a coating that combines anti-reflective and self-cleaning properties to increase light capture, reduce maintenance, and improve panel lifetime.
