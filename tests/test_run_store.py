@@ -1,7 +1,7 @@
 import json
 
 from app.models import ResearchGoal
-from app.run_store import history_html, list_runs, render_report, save_run, write_report
+from app.run_store import history_html, list_runs, render_report, report_file_url, save_run, write_report
 
 FAKE_KEY = "sk-or-v1-THIS-FAKE-KEY-MUST-NOT-PERSIST"
 
@@ -93,4 +93,33 @@ def test_history_lists_runs_and_creates_report(tmp_path, monkeypatch):
     assert report_path.exists()
     assert rows[0]["run_id"] == "run-history"
     assert "Build a better battery" in html
-    assert "/file=" in html
+    assert "/gradio_api/file=" in html
+
+
+def test_report_handles_nullable_hypothesis_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("CO_SCIENTIST_RUNS_DIR", str(tmp_path))
+    details = _cycle_details()
+    hypothesis = details["steps"]["ranking2"]["hypotheses"][0]
+    hypothesis["title"] = None
+    hypothesis["text"] = None
+    hypothesis["novelty_review"] = None
+    hypothesis["feasibility_review"] = None
+
+    run = save_run(
+        research_goal=ResearchGoal(description="Handle sparse model output"),
+        cycle_details=details,
+        status="done",
+        references_html="<p>refs</p>",
+        results_html="<p>results</p>",
+        run_id="run-nullable",
+    )
+
+    report = render_report(run)
+    assert "Untitled" in report
+    assert "Traceback" not in report
+
+
+def test_report_file_url_uses_gradio_file_endpoint(tmp_path):
+    report_path = tmp_path / "reports" / "run with spaces.html"
+    assert report_file_url(report_path).startswith("/gradio_api/file=")
+    assert "run%20with%20spaces.html" in report_file_url(report_path)

@@ -10,6 +10,7 @@ import re
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from .utils import redact_secrets
 
@@ -34,6 +35,11 @@ def get_runs_dir() -> Path:
 
 def get_reports_dir() -> Path:
     return get_results_dir() / "reports"
+
+
+def report_file_url(report_path: Path) -> str:
+    """Return a Gradio file-serving URL for a generated report."""
+    return f"/gradio_api/file={quote(report_path.resolve().as_posix())}"
 
 
 def generate_run_id(created_at: Optional[dt.datetime] = None) -> str:
@@ -157,7 +163,7 @@ def render_report(run: Dict[str, Any]) -> str:
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>{html.escape(run.get('run_id', 'Run report'))}</title>",
+        f"<title>{_escape(run.get('run_id'), 'Run report')}</title>",
         "<style>",
         "body{font-family:Arial,sans-serif;line-height:1.5;margin:32px;color:#1f2933;background:#fff}",
         "main{max-width:960px;margin:0 auto}",
@@ -168,11 +174,11 @@ def render_report(run: Dict[str, Any]) -> str:
         "</style>",
         "</head>",
         "<body><main>",
-        f"<h1>Research Run {html.escape(run.get('run_id', ''))}</h1>",
-        f'<p class="meta">Created: {html.escape(run.get("created_at", ""))}</p>',
-        f"<p>{html.escape(run.get('status', ''))}</p>",
+        f"<h1>Research Run {_escape(run.get('run_id'))}</h1>",
+        f'<p class="meta">Created: {_escape(run.get("created_at"))}</p>',
+        f"<p>{_escape(run.get('status'))}</p>",
         "<section><h2>Research Goal</h2>",
-        f"<p>{html.escape(goal.get('description', ''))}</p>",
+        f"<p>{_escape(goal.get('description'))}</p>",
         _settings_table(goal),
         "</section>",
         "<section><h2>Final Hypotheses</h2>",
@@ -187,16 +193,16 @@ def render_report(run: Dict[str, Any]) -> str:
     html_parts.append("</section><section><h2>Cycle Steps</h2>")
     for step_name, step_data in steps.items():
         hypotheses = step_data.get("hypotheses", []) if isinstance(step_data, dict) else []
-        html_parts.append(f"<h3>{html.escape(step_name)}</h3>")
+        html_parts.append(f"<h3>{_escape(step_name)}</h3>")
         html_parts.append(f"<p>{len(hypotheses)} hypotheses</p>")
         if step_name == "meta_review":
-            html_parts.append(f"<pre>{html.escape(json.dumps(step_data, indent=2, sort_keys=True))}</pre>")
+            html_parts.append(f"<pre>{_escape(json.dumps(step_data, indent=2, sort_keys=True))}</pre>")
 
     html_parts.extend(
         [
             "</section><section><h2>References</h2>",
             "<p>Reference results are stored from the app display for this run.</p>",
-            f"<pre>{html.escape(run.get('references_html', ''))}</pre>",
+            f"<pre>{_escape(run.get('references_html'))}</pre>",
             "</section>",
             "</main></body></html>",
         ]
@@ -224,16 +230,16 @@ def history_html(limit: int = 20) -> str:
     for run in runs:
         try:
             report_path = ensure_report(run["run_id"])
-            report_link = f"/file={report_path.resolve().as_posix()}"
+            report_link = report_file_url(report_path)
         except OSError:
             report_link = "#"
         rows.append(
             "<tr>"
-            f"<td>{html.escape(run.get('created_at', ''))}</td>"
-            f"<td>{html.escape(run.get('goal', ''))}</td>"
-            f"<td>{html.escape(str(run.get('iteration', '')))}</td>"
-            f"<td><code>{html.escape(run.get('run_id', ''))}</code></td>"
-            f'<td><a href="{html.escape(report_link)}" target="_blank">Open report</a></td>'
+            f"<td>{_escape(run.get('created_at'))}</td>"
+            f"<td>{_escape(run.get('goal'))}</td>"
+            f"<td>{_escape(run.get('iteration'))}</td>"
+            f"<td><code>{_escape(run.get('run_id'))}</code></td>"
+            f'<td><a href="{_escape(report_link)}" target="_blank">Open report</a></td>'
             "</tr>"
         )
 
@@ -252,9 +258,7 @@ def _settings_table(goal: Dict[str, Any]) -> str:
         "elo_k_factor",
         "top_k_hypotheses",
     ]
-    rows = "".join(
-        f"<tr><th>{html.escape(field)}</th><td>{html.escape(str(goal.get(field, '')))}</td></tr>" for field in fields
-    )
+    rows = "".join(f"<tr><th>{_escape(field)}</th><td>{_escape(goal.get(field))}</td></tr>" for field in fields)
     return f"<table><tbody>{rows}</tbody></table>"
 
 
@@ -272,15 +276,21 @@ def _final_hypotheses(steps: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _hypothesis_block(index: int, hypothesis: Dict[str, Any]) -> str:
     comments = hypothesis.get("review_comments") or []
-    comments_html = "".join(f"<li>{html.escape(str(comment))}</li>" for comment in comments)
+    comments_html = "".join(f"<li>{_escape(comment)}</li>" for comment in comments)
     return (
         '<div class="hypothesis">'
-        f"<h3>{index}. {html.escape(hypothesis.get('title', 'Untitled'))}</h3>"
-        f"<p><strong>ID:</strong> {html.escape(str(hypothesis.get('id', '')))} | "
-        f"<strong>Elo:</strong> {html.escape(str(hypothesis.get('elo_score', '')))}</p>"
-        f"<p>{html.escape(hypothesis.get('text', ''))}</p>"
-        f"<p><strong>Novelty:</strong> {html.escape(str(hypothesis.get('novelty_review', '')))} | "
-        f"<strong>Feasibility:</strong> {html.escape(str(hypothesis.get('feasibility_review', '')))}</p>"
+        f"<h3>{index}. {_escape(hypothesis.get('title'), 'Untitled')}</h3>"
+        f"<p><strong>ID:</strong> {_escape(hypothesis.get('id'))} | "
+        f"<strong>Elo:</strong> {_escape(hypothesis.get('elo_score'))}</p>"
+        f"<p>{_escape(hypothesis.get('text'))}</p>"
+        f"<p><strong>Novelty:</strong> {_escape(hypothesis.get('novelty_review'))} | "
+        f"<strong>Feasibility:</strong> {_escape(hypothesis.get('feasibility_review'))}</p>"
         f"<ul>{comments_html}</ul>"
         "</div>"
     )
+
+
+def _escape(value: Any, default: str = "") -> str:
+    if value is None:
+        value = default
+    return html.escape(str(value))

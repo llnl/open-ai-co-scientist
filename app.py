@@ -9,7 +9,7 @@ from app.agents import SupervisorAgent
 
 # Import the existing app components
 from app.models import ContextMemory, ResearchGoal
-from app.run_store import history_html, save_run, write_report
+from app.run_store import get_reports_dir, history_html, report_file_url, save_run, write_report
 from app.tools.arxiv_search import ArxivSearchTool
 from app.utils import (
     classify_llm_error,
@@ -200,7 +200,7 @@ def run_cycle() -> Tuple[str, str, str]:
             log_file=log_file,
         )
         report_path = write_report(saved_run)
-        status_msg = f"{status_msg}\nRun ID: {saved_run['run_id']}\nReport: /file={report_path.resolve().as_posix()}"
+        status_msg = f"{status_msg}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}"
 
         return status_msg, results_html, references_html
 
@@ -720,4 +720,12 @@ if __name__ == "__main__":
     demo = create_gradio_interface()
 
     # Launch with appropriate settings for HF Spaces
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, show_error=True)
+    reports_dir = get_reports_dir()
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        show_error=True,
+        allowed_paths=[str(reports_dir.resolve())],
+    )
