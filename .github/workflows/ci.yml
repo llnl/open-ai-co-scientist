@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint
+        run: make lint
+
+      - name: Offline test suite
+        run: make test
+
+      - name: Boot smoke
+        run: |
+          python -c "import app; print('app package imports OK')"
+          python - <<'EOF'
+          import importlib.util
+          from unittest.mock import patch
+          spec = importlib.util.spec_from_file_location("gradio_app", "app.py")
+          m = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          with patch.object(m.requests, "get", side_effect=RuntimeError("offline CI")):
+              demo = m.create_gradio_interface()
+          assert demo is not None
+          print("Gradio interface constructs OK")
+          EOF
