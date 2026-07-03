@@ -9,6 +9,7 @@ from app.agents import SupervisorAgent
 
 # Import the existing app components
 from app.models import ContextMemory, ResearchGoal
+from app.run_store import get_reports_dir, history_html, report_file_url, save_run, write_report
 from app.tools.arxiv_search import ArxivSearchTool
 from app.utils import (
     classify_llm_error,
@@ -189,6 +190,17 @@ def run_cycle() -> Tuple[str, str, str]:
                 )
         else:
             status_msg = f"✅ Cycle {iteration} completed successfully! Log: {log_file}"
+
+        saved_run = save_run(
+            research_goal=current_research_goal,
+            cycle_details=cycle_details,
+            status=status_msg,
+            references_html=references_html,
+            results_html=results_html,
+            log_file=log_file,
+        )
+        report_path = write_report(saved_run)
+        status_msg = f"{status_msg}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}"
 
         return status_msg, results_html, references_html
 
@@ -609,17 +621,23 @@ def create_gradio_interface():
                 **Note:** Since it uses the free version of Gemini, it may occasionally return zero hypotheses if rate limits are reached. Please try again in this case.
                 """)
 
-        # Results section
-        with gr.Row():
-            with gr.Column():
-                results_output = gr.HTML(label="Results", value="<p>Results will appear here after running cycles.</p>")
+        with gr.Tabs():
+            with gr.Tab("Current Run"):
+                with gr.Row():
+                    with gr.Column():
+                        results_output = gr.HTML(
+                            label="Results", value="<p>Results will appear here after running cycles.</p>"
+                        )
 
-        # References section
-        with gr.Row():
-            with gr.Column():
-                references_output = gr.HTML(
-                    label="References", value="<p>Related research papers will appear here.</p>"
-                )
+                with gr.Row():
+                    with gr.Column():
+                        references_output = gr.HTML(
+                            label="References", value="<p>Related research papers will appear here.</p>"
+                        )
+
+            with gr.Tab("Run History"):
+                refresh_history_btn = gr.Button("Refresh History")
+                history_output = gr.HTML(label="Saved Runs", value=history_html())
 
         # Event handler: single button sets research goal and runs cycle
         def run_full_cycle(
@@ -638,7 +656,7 @@ def create_gradio_interface():
             # Run cycle
             status, results, references = run_cycle()
             # Combine status messages
-            return f"{status_msg}\n\n{status}", results, references
+            return f"{status_msg}\n\n{status}", results, references, history_html()
 
         run_cycle_btn.click(
             fn=run_full_cycle,
@@ -651,8 +669,10 @@ def create_gradio_interface():
                 elo_k_factor,
                 top_k_hypotheses,
             ],
-            outputs=[status_output, results_output, references_output],
+            outputs=[status_output, results_output, references_output, history_output],
         )
+
+        refresh_history_btn.click(fn=history_html, inputs=[], outputs=[history_output])
 
         # Example inputs
         gr.Examples(
@@ -700,4 +720,12 @@ if __name__ == "__main__":
     demo = create_gradio_interface()
 
     # Launch with appropriate settings for HF Spaces
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, show_error=True)
+    reports_dir = get_reports_dir()
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        show_error=True,
+        allowed_paths=[str(reports_dir.resolve())],
+    )
