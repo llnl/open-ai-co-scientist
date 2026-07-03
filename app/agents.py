@@ -1,7 +1,7 @@
 import json
 import math
 import random
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 # Import necessary components from other modules
 from .models import ContextMemory, Hypothesis, ResearchGoal
@@ -202,8 +202,16 @@ def combine_hypotheses(hypoA: Hypothesis, hypoB: Hypothesis) -> Hypothesis:
 
 
 class GenerationAgent:
-    def generate_new_hypotheses(self, research_goal: ResearchGoal, context: ContextMemory) -> List[Hypothesis]:
-        """Generates new hypotheses using LLM, based on research_goal settings."""
+    def generate_new_hypotheses(
+        self, research_goal: ResearchGoal, context: ContextMemory
+    ) -> Tuple[List[Hypothesis], List[str]]:
+        """Generates new hypotheses using LLM, based on research_goal settings.
+
+        Returns (hypotheses, errors). Error markers are kept out of the
+        hypothesis list (they must not be ranked) but their messages are
+        returned so the caller can surface the real failure cause instead of
+        letting the run silently end with no rankings (see issue llnl#36).
+        """
         # Use settings from research_goal object
         num_to_generate = research_goal.num_hypotheses
         gen_temp = research_goal.generation_temperature
@@ -217,11 +225,14 @@ class GenerationAgent:
         # Pass the specific temperature and num_hypotheses
         raw_output = call_llm_for_generation(prompt, num_hypotheses=num_to_generate, temperature=gen_temp)
         new_hypos = []
+        errors = []
         for idea in raw_output:
-            # Check for error response from LLM call
+            # An error response carries the real failure cause; collect it
+            # (do not add it to the hypothesis list) so the caller can report it.
             if idea["title"] == "Error":
-                logger.error("Skipping hypothesis generation due to LLM error: %s", idea["text"])
-                continue  # Skip this one, maybe add placeholder?
+                logger.error("Hypothesis generation failed: %s", idea["text"])
+                errors.append(idea["text"])
+                continue
 
             hypo_id = generate_unique_id("G")
             # Ensure ID is unique within the current context
@@ -230,7 +241,7 @@ class GenerationAgent:
             h = Hypothesis(hypo_id, idea["title"], idea["text"])
             logger.info("Generated hypothesis: %s", h.to_dict())
             new_hypos.append(h)
-        return new_hypos
+        return new_hypos, errors
 
 
 class ReflectionAgent:
@@ -422,18 +433,15 @@ class SupervisorAgent:
 
         # 1. Generation
         logger.info("Step 1: Generation")
-        new_hypotheses = self.generation_agent.generate_new_hypotheses(research_goal, context)
+        new_hypotheses, generation_errors = self.generation_agent.generate_new_hypotheses(research_goal, context)
         for nh in new_hypotheses:
             context.add_hypothesis(nh)  # Add to central context
         cycle_details["steps"]["generation"] = {"hypotheses": [h.to_dict() for h in new_hypotheses]}
 
-        # Propagate LLM errors to top-level errors field for frontend display
-        errors = []
-        for h in new_hypotheses:
-            if getattr(h, "title", None) == "Error" and getattr(h, "text", None):
-                errors.append(h.text)
-        if errors:
-            cycle_details["errors"] = errors
+        # Propagate LLM errors to top-level errors field for frontend display, so a
+        # generation failure surfaces its real cause instead of an empty ranking.
+        if generation_errors:
+            cycle_details["errors"] = generation_errors
 
         # Get all active hypotheses for subsequent steps
         active_hypos = context.get_active_hypotheses()

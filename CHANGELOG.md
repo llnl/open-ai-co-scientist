@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Generation failures no longer surface as a silent empty ranking (llnl#36).
+  The real cause — missing/invalid API key, model unavailable/delisted, rate
+  limiting, or unparsable model output — now appears in the run status line and
+  an actionable error box in the results panel, instead of a false
+  "completed successfully". Fixes a three-layer silent-failure chain where the
+  error text was discarded during generation, making downstream propagation
+  dead code.
+
 ### Added
+- `classify_llm_error()` maps raw LLM/API errors to user-actionable categories;
+  `call_llm` now distinguishes model-unavailable/delisted errors.
 - Offline-by-default test suite: `integration`/`network` pytest markers, mocked
   OpenRouter boundary tests, and credential-leak regression tests.
 - CI workflow (lint, offline tests, boot smoke) pinned to Python 3.12 with

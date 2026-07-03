@@ -10,7 +10,13 @@ from app.agents import SupervisorAgent
 # Import the existing app components
 from app.models import ContextMemory, ResearchGoal
 from app.tools.arxiv_search import ArxivSearchTool
-from app.utils import filter_free_models, get_deployment_environment, is_huggingface_space, logger
+from app.utils import (
+    classify_llm_error,
+    filter_free_models,
+    get_deployment_environment,
+    is_huggingface_space,
+    logger,
+)
 
 # Global state for the Gradio app
 global_context = ContextMemory()
@@ -167,8 +173,22 @@ def run_cycle() -> Tuple[str, str, str]:
         # Get references
         references_html = get_references_html(cycle_details)
 
-        # Status message
-        status_msg = f"✅ Cycle {iteration} completed successfully! Log: {log_file}"
+        # Status message: surface the real cause when generation failed, instead
+        # of reporting success over an empty result (issue llnl#36).
+        errors = cycle_details.get("errors", [])
+        produced_any = bool(cycle_details.get("steps", {}).get("generation", {}).get("hypotheses"))
+        if errors:
+            categories = sorted({classify_llm_error(e) for e in errors})
+            cause = "; ".join(categories)
+            if produced_any:
+                status_msg = f"⚠️ Cycle {iteration} completed with errors ({cause}). Log: {log_file}"
+            else:
+                status_msg = (
+                    f"⚠️ Cycle {iteration} could not generate hypotheses — {cause}. "
+                    f"See the results panel for details. Log: {log_file}"
+                )
+        else:
+            status_msg = f"✅ Cycle {iteration} completed successfully! Log: {log_file}"
 
         return status_msg, results_html, references_html
 
@@ -180,7 +200,25 @@ def run_cycle() -> Tuple[str, str, str]:
 
 def format_cycle_results(cycle_details: Dict, log_file: str = None) -> str:
     """Format cycle results as HTML with expandable sections. Optionally log final rankings to log_file."""
+    import html as html_lib
+
     html = f"<h2>🔬 Iteration {cycle_details.get('iteration', 'Unknown')}</h2>"
+
+    # Surface generation errors up front with an actionable category, so a failed
+    # run explains itself instead of silently showing empty rankings (issue llnl#36).
+    errors = cycle_details.get("errors", [])
+    if errors:
+        items = ""
+        for e in errors:
+            category = classify_llm_error(e)
+            items += f"<li><strong>{html_lib.escape(category)}:</strong> {html_lib.escape(str(e))}</li>"
+        html += f"""
+        <div style="margin: 20px 0; padding: 15px; border: 2px solid #e74c3c; border-radius: 8px; background-color: #fff5f5;">
+            <h3>⚠️ Generation could not complete</h3>
+            <p>The model/API reported the following, so some or all hypotheses were not generated:</p>
+            <ul style="color: #c0392b;">{items}</ul>
+        </div>
+        """
 
     # Process steps in order
     steps = cycle_details.get("steps", {})
@@ -417,10 +455,18 @@ def format_cycle_results(cycle_details: Dict, log_file: str = None) -> str:
 
         html += "</div>"
     else:
-        html += """
+        if errors:
+            cause = "; ".join(sorted({classify_llm_error(e) for e in errors}))
+            no_rank_msg = (
+                f"No hypotheses available for final ranking because generation failed: {html_lib.escape(cause)}. "
+                "See the details above."
+            )
+        else:
+            no_rank_msg = "No hypotheses available for final ranking. This may indicate an error in the workflow."
+        html += f"""
         <div style="margin: 20px 0; padding: 15px; border: 2px solid #e74c3c; border-radius: 8px; background-color: #fff5f5;">
             <h3>🏆 Final Rankings - Top Hypotheses</h3>
-            <p style="color: #e74c3c;">No hypotheses available for final ranking. This may indicate an error in the workflow.</p>
+            <p style="color: #e74c3c;">{no_rank_msg}</p>
         </div>
         """
         # Log missing final rankings if log_file is provided
