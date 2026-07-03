@@ -93,7 +93,11 @@ def test_surfaced_error_never_contains_key(monkeypatch):
     'No endpoints found' branch returns immediately — no retry sleeps)."""
     fake_key = "sk-or-v1-LEAK-CANARY"
     monkeypatch.setenv("OPENROUTER_API_KEY", fake_key)
-    with patch.object(utils, "OpenAI") as mock_openai:
+    # Mock the fallback fetch so the model-unavailable path stays offline (llnl#26).
+    with (
+        patch.object(utils, "fetch_free_models", return_value=["fb-a:free", "fb-b:free"]),
+        patch.object(utils, "OpenAI") as mock_openai,
+    ):
         mock_openai.return_value.chat.completions.create.side_effect = Exception(
             f"No endpoints found for model; key was {fake_key}"
         )
