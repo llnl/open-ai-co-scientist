@@ -165,8 +165,11 @@ Use manual deployment while autonomy is still at Level 0 or Level 1 in
 2. Confirm the Hugging Face Space has `OPENROUTER_API_KEY` set as a secret.
 3. Confirm the Space is configured for the Gradio app entrypoint `app.py`.
 4. Push or mirror the tagged upstream tree to the Space repo.
-5. Watch the Space build logs until the app starts successfully.
-6. Run a live smoke test with a free or budget-capped OpenRouter model.
+5. Watch the Space build logs or run `scripts/watch_huggingface_space.py`
+   until the Space reaches `RUNNING`.
+6. If the Space reports `BUILD_ERROR`, `RUNTIME_ERROR`, or another terminal
+   failure, fix it through the loop repo and repeat the upstream release path.
+7. Run a live smoke test with a free or budget-capped OpenRouter model.
 
 ### CI/CD Deployment
 
@@ -183,11 +186,12 @@ The recommended workflow is:
 4. Run the app boot smoke test.
 5. Push the release tree to the Hugging Face Space repo using a
    least-privilege Hugging Face token.
-6. Poll or inspect the Space build status.
+6. Poll the Space build status and fail the workflow if it reports a terminal
+   build or runtime error.
 7. Run a post-deploy smoke test against the public Space with a free model.
 8. Fail loudly and open an issue if the Space build or smoke test fails.
 
-The `Hugging Face Deploy` workflow implements steps 1 through 5. Post-deploy
+The `Hugging Face Deploy` workflow implements steps 1 through 6. Post-deploy
 live smoke testing remains a required follow-up until a budget-capped smoke
 test workflow is added.
 

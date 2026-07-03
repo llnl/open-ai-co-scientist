@@ -79,11 +79,13 @@ Release {plan.version} from the private loop repo to `{plan.upstream_repo}`.
 - [ ] Sync diff was reviewed for secrets, private trails, generated outputs, and accidental local files.
 - [ ] `results/`, `.env`, `.worktree/`, and `.audit/` are absent from the public diff.
 - [ ] Hugging Face deployment notes are understood before tagging/deploying.
+- [ ] If deploying, Hugging Face reaches RUNNING after the Space rebuild; build/runtime errors become follow-up fixes before release sign-off.
 
 ## Deployment
 
 After this PR merges with a merge commit, tag the upstream merge commit as `{plan.version}`.
-That tag is the input for Hugging Face deployment.
+That tag is the input for Hugging Face deployment. The deploy workflow watches
+the Space status after pushing and fails on build or runtime errors.
 """
 
 
