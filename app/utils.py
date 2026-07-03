@@ -2,9 +2,10 @@ import logging
 import os
 import random
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
+import requests
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -61,44 +62,118 @@ def classify_llm_error(error_text: str) -> str:
 
 
 # --- LLM Interaction ---
-def call_llm(prompt: str, temperature: float = 0.7) -> str:
-    """
-    Calls an LLM via the OpenRouter API and returns the response. Handles retries.
-    """
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        # openai>=1 raises from the OpenAI() constructor on a missing key, so
-        # check before constructing the client.
-        logger.error("OPENROUTER_API_KEY environment variable not set.")
-        return "Error: OpenRouter API key not set."
+# Curated free models tried, in order, when the primary model is unavailable
+# or delisted. Keeps the public demo working when a single free model dies
+# (issue llnl#26). Fallback candidates are fetched live from OpenRouter (the
+# source of truth for what is actually available) rather than hardcoded — a
+# static list rots as free models are delisted, which is the very failure this
+# fixes. The list below is only a last resort if the live list can't be fetched.
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
-    client = OpenAI(
-        base_url=config.get("openrouter_base_url"),
-        api_key=api_key,
-    )
-    llm_model = config.get("llm_model")
-    max_retries = config.get("max_retries", 3)
+# Bound the number of alternative models tried when the primary is unavailable,
+# so a fully-broken OpenRouter doesn't trigger a long chain of calls.
+MAX_FALLBACK_ATTEMPTS = 4
+
+# Last-resort static fallback, used only when the live model list is unreachable.
+# Kept minimal; verified members can still be delisted, so the live list wins.
+STATIC_FALLBACK_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+]
+
+# Marker prefixes identifying outcomes that a *different* model might fix, so
+# call_llm should try another candidate. Auth and missing-key/not-configured
+# errors are terminal (a different model won't help) and are NOT listed here.
+_MODEL_UNAVAILABLE_PREFIX = "Error: Model unavailable or delisted"
+_RATE_LIMIT_PREFIX = "Error: Rate limit exceeded"
+_RECOVERABLE_PREFIXES = (_MODEL_UNAVAILABLE_PREFIX, _RATE_LIMIT_PREFIX, "Error: API call failed")
+
+
+def _recoverable_with_another_model(result: str) -> bool:
+    """True if ``result`` is an error a different model might succeed on."""
+    return any(result.startswith(p) for p in _RECOVERABLE_PREFIXES)
+
+
+# Cache of live free-model IDs (fetched lazily, only when a fallback is needed).
+_free_models_cache: Optional[List[str]] = None
+
+
+def fetch_free_models(force_refresh: bool = False) -> List[str]:
+    """Return the currently-available free model IDs from OpenRouter (cached).
+
+    Returns [] on any failure (network, parse) so callers fall back to the
+    static list. Never raises. The API key is used if present but not required
+    for the public models endpoint.
+    """
+    global _free_models_cache
+    if _free_models_cache is not None and not force_refresh:
+        return _free_models_cache
+    try:
+        headers = {}
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = requests.get(OPENROUTER_MODELS_URL, headers=headers, timeout=10)
+        resp.raise_for_status()
+        ids = [m.get("id") for m in resp.json().get("data", []) if m.get("id")]
+        _free_models_cache = filter_free_models(sorted(ids))
+        logger.info("Fetched %d free models from OpenRouter for fallback.", len(_free_models_cache))
+        return _free_models_cache
+    except Exception as e:
+        logger.warning("Could not fetch live model list for fallback: %s", redact_secrets(str(e)))
+        return []
+
+
+def get_fallback_models(primary: Optional[str] = None) -> List[str]:
+    """Working free models to try when ``primary`` is unavailable — the live
+    OpenRouter list if reachable, else the static last resort — excluding
+    ``primary`` itself."""
+    source = fetch_free_models() or STATIC_FALLBACK_MODELS
+    return [m for m in source if m and m != primary]
+
+
+def _model_candidates(primary: str, fallbacks: Optional[List[str]]) -> List[str]:
+    """Ordered, de-duplicated candidate list: primary first, then fallbacks."""
+    ordered = []
+    for m in [primary, *(fallbacks or [])]:
+        if m and m not in ordered:
+            ordered.append(m)
+    return ordered
+
+
+def _is_rate_limit(error_str: str) -> bool:
+    """Detect OpenRouter/provider rate-limit errors. Deliberately broad: the API
+    reports these as '429', 'Rate limit exceeded', or 'temporarily rate-limited'
+    depending on the upstream provider."""
+    low = error_str.lower()
+    return "429" in error_str or "rate limit" in low or "rate-limited" in low
+
+
+def _attempt_model(
+    client: "OpenAI", model: str, prompt: str, temperature: float, max_retries: Optional[int] = None
+) -> str:
+    """Single-model call with retry/backoff. Returns the content or an
+    'Error: ...' string. Model-unavailable and rate-limit outcomes use marker
+    prefixes (see _RECOVERABLE_PREFIXES) so the caller can try a different model.
+    ``max_retries`` overrides the config default — pass 1 for a quick probe when
+    other candidates are available (avoids long backoff on one flaky model)."""
+    if max_retries is None:
+        max_retries = config.get("max_retries", 3)
     initial_delay = config.get("initial_retry_delay", 1)
-
-    if not llm_model:
-        logger.error("LLM model not configured in config.yaml")
-        return "Error: LLM model not configured."
-
-    last_error_message = "API call failed after multiple retries."  # Default error
+    last_error_message = "API call failed after multiple retries."
 
     for attempt in range(max_retries):
         try:
             completion = client.chat.completions.create(
-                model=llm_model,
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
             )
             if completion.choices and len(completion.choices) > 0:
-                return completion.choices[0].message.content or ""  # Return empty string if content is None
+                return completion.choices[0].message.content or ""
             else:
                 logger.error("No choices in the LLM response: %s", completion)
                 last_error_message = f"No choices in the response: {completion}"
-                # Continue to retry if possible
 
         except Exception as e:
             error_str = redact_secrets(str(e))
@@ -112,16 +187,17 @@ def call_llm(prompt: str, temperature: float = 0.7) -> str:
             if "No endpoints found" in error_str or "not a valid model" in error_str or "404" in error_str:
                 logger.error(f"Model unavailable: {error_str}")
                 return (
-                    f"Error: Model unavailable or delisted ('{llm_model}'). "
+                    f"{_MODEL_UNAVAILABLE_PREFIX} ('{model}'). "
                     "The selected model may have been removed from OpenRouter or is temporarily unreachable. "
                     "Try selecting a different model. Details: " + error_str
                 )
-            if "Rate limit exceeded" in error_str:
-                logger.warning(f"Rate limit exceeded (attempt {attempt + 1}/{max_retries}): {error_str}")
-                last_error_message = f"Rate limit exceeded: {error_str}"
-            else:
-                logger.error(f"API call failed (attempt {attempt + 1}/{max_retries}): {error_str}")
-                last_error_message = f"API call failed: {error_str}"
+            if _is_rate_limit(error_str):
+                # Return immediately so the caller can try a different free model
+                # (they have independent rate limits) rather than waiting here.
+                logger.warning(f"Rate limited on '{model}': {error_str}")
+                return f"{_RATE_LIMIT_PREFIX} ('{model}'). Details: " + error_str
+            logger.error(f"API call failed on '{model}' (attempt {attempt + 1}/{max_retries}): {error_str}")
+            last_error_message = f"API call failed: {error_str}"
 
             if attempt < max_retries - 1:
                 wait_time = initial_delay * (2**attempt)
@@ -129,9 +205,63 @@ def call_llm(prompt: str, temperature: float = 0.7) -> str:
                 time.sleep(wait_time)
             else:
                 logger.error("Max retries reached. Giving up.")
-                break  # Exit loop after last attempt
+                break
 
-    return f"Error: {last_error_message}"  # Return the last recorded error
+    return f"Error: {last_error_message}"
+
+
+def call_llm(
+    prompt: str,
+    temperature: float = 0.7,
+    model: Optional[str] = None,
+    fallback_models: Optional[List[str]] = None,
+) -> str:
+    """Calls an LLM via OpenRouter, returning the response text.
+
+    Tries the primary model (``model`` or ``config['llm_model']``) and, if it is
+    unavailable/delisted, automatically falls back to working free models
+    (issue llnl#26) so a single delisted model does not fail every run. Falls
+    back only on model-unavailable — not on auth (same key won't help) or
+    rate-limit (transient, already retried). Auth/parse/other errors and the
+    final model-unavailable error still propagate to the caller.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        # openai>=1 raises from the OpenAI() constructor on a missing key, so
+        # check before constructing the client.
+        logger.error("OPENROUTER_API_KEY environment variable not set.")
+        return "Error: OpenRouter API key not set."
+
+    # max_retries=0 disables the OpenAI SDK's own Retry-After backoff (which can
+    # block ~30s on a rate-limited free model); call_llm controls retries itself.
+    client = OpenAI(
+        base_url=config.get("openrouter_base_url"),
+        api_key=api_key,
+        max_retries=0,
+    )
+    primary = model or config.get("llm_model")
+    if not primary:
+        logger.error("LLM model not configured in config.yaml")
+        return "Error: LLM model not configured."
+
+    # Happy path: try the primary model. No fallback fetch unless it's needed.
+    result = _attempt_model(client, primary, prompt, temperature)
+    if not _recoverable_with_another_model(result):
+        return result  # success, or a terminal error (auth) we must not mask
+
+    # Primary failed with something another model might fix (unavailable, rate
+    # limited, provider error): try working free models — the live OpenRouter
+    # list (fetched now) unless the caller passed an explicit list. Quick probes
+    # (max_retries=1) so we move past a flaky model to the next one fast.
+    logger.warning("Primary model '%s' failed (%s); trying other free models.", primary, result[:60])
+    fallbacks = fallback_models if fallback_models is not None else get_fallback_models(primary)
+    for candidate in _model_candidates(primary, fallbacks)[1 : 1 + MAX_FALLBACK_ATTEMPTS]:
+        logger.warning("Trying fallback model '%s'.", candidate)
+        result = _attempt_model(client, candidate, prompt, temperature, max_retries=1)
+        if not _recoverable_with_another_model(result):
+            return result
+    # Every candidate failed — surface the last error.
+    return result
 
 
 # --- Environment Detection ---
