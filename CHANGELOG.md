@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed the Hugging Face Space build failure by pinning `pydantic` to the
+  range required by `gradio[oauth,mcp]==6.19.0`, pinning the Space runtime to
+  Python 3.12, and adding a deploy preflight that runs Hugging Face's Gradio
+  extras resolver before pushing to the Space.
 - Fixed the Hugging Face Space metadata to match the pinned Gradio dependency
   and added post-push Space status polling so build/runtime errors fail the
   deployment workflow instead of being missed (loop#14).
