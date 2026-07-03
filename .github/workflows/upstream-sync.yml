@@ -1,0 +1,87 @@
+name: Upstream Sync PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to sync upstream, for example v0.1.0"
+        required: true
+      upstream_repo:
+        description: "Public upstream repository"
+        required: true
+        default: "llnl/open-ai-co-scientist"
+      dry_run:
+        description: "Prepare the PR body without pushing or opening a PR"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync-${{ github.event.inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Add upstream remote
+        run: |
+          python - <<'EOF'
+          from scripts.prepare_upstream_release import validate_repo, validate_version
+          validate_version("${{ github.event.inputs.version }}")
+          validate_repo("${{ github.event.inputs.upstream_repo }}")
+          EOF
+          git remote add upstream "https://github.com/${{ github.event.inputs.upstream_repo }}.git"
+          git fetch upstream main
+
+      - name: Prepare sync PR body
+        id: release
+        run: |
+          python scripts/prepare_upstream_release.py \
+            --version "${{ github.event.inputs.version }}" \
+            --upstream-repo "${{ github.event.inputs.upstream_repo }}" \
+            --base-ref upstream/main \
+            --head-ref HEAD \
+            --body-file upstream-sync-pr.md
+
+      - name: Upload PR body artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-sync-pr-body
+          path: upstream-sync-pr.md
+
+      - name: Push sync branch and open upstream PR
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          UPSTREAM_REPO: ${{ github.event.inputs.upstream_repo }}
+          SYNC_BRANCH: ${{ steps.release.outputs.sync_branch }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          test -n "$GH_TOKEN"
+          git config user.name "co-scientist-loop"
+          git config user.email "co-scientist-loop@users.noreply.github.com"
+          git switch -C "$SYNC_BRANCH"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${UPSTREAM_REPO}.git" "$SYNC_BRANCH"
+          gh pr create \
+            --repo "$UPSTREAM_REPO" \
+            --base main \
+            --head "$SYNC_BRANCH" \
+            --title "Release $VERSION from loop repo" \
+            --body-file upstream-sync-pr.md

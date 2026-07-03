@@ -116,6 +116,12 @@ The system automatically configures itself based on the deployment environment:
 - **Production (HF Spaces):** Limited to cost-effective models for budget control.
 - **Development:** Full access to all available models.
 
+For the maintained release path from approved loop-repo PRs into the public
+upstream repo and then to Hugging Face, see
+[`docs/upstream-release-process.md`](docs/upstream-release-process.md).
+The process is backed by manual/tag-gated GitHub Actions workflows and offline
+tests.
+
 ### Hugging Face Spaces Setup
 
 1. **Create a new Space** at [Hugging Face Spaces](https://huggingface.co/spaces).

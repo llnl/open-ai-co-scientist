@@ -1,6 +1,9 @@
 import os
+
 import pytest
+
 from app.agents import call_llm_for_generation
+
 
 @pytest.mark.integration
 def test_llm_openrouter_success_and_auth_error():
@@ -14,7 +17,9 @@ def test_llm_openrouter_success_and_auth_error():
     orig_key = os.environ.get("OPENROUTER_API_KEY")
     os.environ["OPENROUTER_API_KEY"] = "invalid_key_for_regression_test"
     try:
-        result = call_llm_for_generation("Test prompt for OpenRouter auth regression", num_hypotheses=2, temperature=0.7)
+        result = call_llm_for_generation(
+            "Test prompt for OpenRouter auth regression", num_hypotheses=2, temperature=0.7
+        )
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["title"] == "Error"

@@ -1,6 +1,8 @@
-import yaml
 import logging
 from typing import Dict
+
+import yaml
+
 
 def load_config(config_path: str = "config.yaml") -> Dict:
     """Loads the configuration from the specified YAML file."""
@@ -20,7 +22,7 @@ def load_config(config_path: str = "config.yaml") -> Dict:
     except yaml.YAMLError as e:
         print(f"Error parsing YAML in {config_path}: {e}")
         exit(1)
-    except AttributeError as e:
+    except AttributeError:
         print(f"Error: Invalid logging level '{log_level_str}' in config file")
         exit(1)
     except KeyError as e:
@@ -29,6 +31,7 @@ def load_config(config_path: str = "config.yaml") -> Dict:
     except Exception as e:
         print(f"An unexpected error occurred while loading config: {e}")
         exit(1)
+
 
 # Load configuration at the start when this module is imported
 config = load_config()

@@ -2,6 +2,14 @@
 
 This guide explains how to deploy the Open AI Co-Scientist system as a Gradio app on Hugging Face Spaces.
 
+For the release path from approved private loop PRs into the public upstream
+repo and then to Hugging Face, see
+[`docs/upstream-release-process.md`](upstream-release-process.md).
+
+Release-tag CI/CD is implemented in `.github/workflows/huggingface-deploy.yml`;
+it runs lint, offline tests, and an app boot smoke test before pushing to the
+configured Space.
+
 ## 📋 Prerequisites
 
 1. **Hugging Face Account**: Create an account at [huggingface.co](https://huggingface.co)

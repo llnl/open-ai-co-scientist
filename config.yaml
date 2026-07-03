@@ -9,8 +9,10 @@
 # OpenRouter API Base URL
 openrouter_base_url: "https://openrouter.ai/api/v1"
 
-# LLM Model
-llm_model: "google/gemini-2.0-flash-exp:free"
+# LLM Model. The previous default (google/gemini-2.0-flash-exp:free) was
+# delisted; if this one is later delisted too, call_llm auto-falls back to a
+# live free model (issue llnl#26), so the demo keeps working.
+llm_model: "meta-llama/llama-3.3-70b-instruct:free"
 
 # Number of hypotheses to generate
 num_hypotheses: 6

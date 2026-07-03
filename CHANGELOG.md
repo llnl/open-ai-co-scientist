@@ -5,6 +5,53 @@ All notable changes to the AI Co-Scientist project will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Automatic model fallback (llnl#26): when the configured/selected model is
+  unavailable, delisted, rate-limited, or erroring, `call_llm` falls back to a
+  **working free model fetched live from OpenRouter** (`fetch_free_models`, the
+  source of truth) instead of failing every run. Falls back on
+  model-unavailable / rate-limit / provider errors — not on auth (a different
+  model won't help). Rate-limited free models are skipped immediately (SDK
+  Retry-After backoff disabled) rather than blocking the run; attempts are
+  bounded. A static list is a last resort only if the live fetch fails.
+- Updated the default `config.yaml` model (the previous
+  `google/gemini-2.0-flash-exp:free` was delisted).
+
+### Fixed
+- Generation failures no longer surface as a silent empty ranking (llnl#36).
+  The real cause — missing/invalid API key, model unavailable/delisted, rate
+  limiting, or unparsable model output — now appears in the run status line and
+  an actionable error box in the results panel, instead of a false
+  "completed successfully". Fixes a three-layer silent-failure chain where the
+  error text was discarded during generation, making downstream propagation
+  dead code.
+
+### Added
+- `classify_llm_error()` maps raw LLM/API errors to user-actionable categories;
+  `call_llm` now distinguishes model-unavailable/delisted errors.
+- Offline-by-default test suite: `integration`/`network` pytest markers, mocked
+  OpenRouter boundary tests, and credential-leak regression tests.
+- CI workflow (lint, offline tests, boot smoke) pinned to Python 3.12 with
+  CPU-only torch.
+- `pyproject.toml` (pytest + ruff config), pinned `requirements.txt`,
+  `requirements-dev.txt`, `.env.example`.
+- Makefile targets: `test`, `test-all`, `lint`, `fmt`, and per-issue worktree
+  helpers `wt`/`wt-clean`.
+- `AGENTS.md` (AI-agent instructions), `docs/loop/GOALS.md` (loop steering),
+  `scripts/setup_labels.sh` (loop label state machine).
+
+### Fixed
+- `call_llm` crashed with openai>=1 when `OPENROUTER_API_KEY` was unset instead
+  of returning the documented error message.
+- API keys are now redacted from log lines and user-facing error text
+  (`redact_secrets`).
+- `similarity_score` treats whitespace-only input as empty (returns 0.0).
+
+### Removed
+- Dead FastAPI-era `tests/test_api.py` (targeted the removed `app/api.py`) and
+  the stray `tests/test_graph.html` artifact.
+
 ## [1.1.0] - 2025-05-31
 
 ### Added - References Section and Literature Integration
