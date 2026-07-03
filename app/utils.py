@@ -38,6 +38,28 @@ def redact_secrets(text: str) -> str:
     return text
 
 
+# --- Error Classification ---
+def classify_llm_error(error_text: str) -> str:
+    """Maps a raw LLM/API error string to a short, user-actionable category.
+
+    Used to turn a silent 'no hypotheses' outcome into a message that names the
+    real cause (see GOALS.md theme 1: errors must be actionable, never silent).
+    """
+    text = (error_text or "").lower()
+    # Order matters: most specific first.
+    if "api key not set" in text or "401" in text or "authentication with openrouter failed" in text:
+        return "Missing or invalid API key"
+    if "rate limit" in text:
+        return "Rate limited by the model provider"
+    if "model unavailable" in text or "no endpoints found" in text or "not a valid model" in text or "404" in text:
+        return "Model unavailable or delisted"
+    if "could not parse" in text or "invalid json" in text:
+        return "Model returned unparsable output"
+    if "model not configured" in text:
+        return "LLM model not configured"
+    return "LLM/API error"
+
+
 # --- LLM Interaction ---
 def call_llm(prompt: str, temperature: float = 0.7) -> str:
     """
@@ -86,6 +108,13 @@ def call_llm(prompt: str, temperature: float = 0.7) -> str:
                     "Authentication with OpenRouter failed (401 Unauthorized). "
                     "Please check that your OPENROUTER_API_KEY environment variable is set and valid "
                     "in the environment where the server is running. No hypotheses can be generated until this is resolved."
+                )
+            if "No endpoints found" in error_str or "not a valid model" in error_str or "404" in error_str:
+                logger.error(f"Model unavailable: {error_str}")
+                return (
+                    f"Error: Model unavailable or delisted ('{llm_model}'). "
+                    "The selected model may have been removed from OpenRouter or is temporarily unreachable. "
+                    "Try selecting a different model. Details: " + error_str
                 )
             if "Rate limit exceeded" in error_str:
                 logger.warning(f"Rate limit exceeded (attempt {attempt + 1}/{max_retries}): {error_str}")
