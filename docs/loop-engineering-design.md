@@ -180,6 +180,9 @@ suggestions — closing upstream issues stays manual.
 
 **Sync mechanics (private → public).**
 
+The concise operator runbook for this path lives in
+[`docs/upstream-release-process.md`](upstream-release-process.md).
+
 - Cadence: weekly, or per-milestone when a coherent feature completes —
   whichever comes first once there are unsynced commits. A scheduled job
   prepares the sync branch automatically; **you are the only merge
