@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Automatic model fallback (llnl#26): when the configured/selected model is
+  unavailable or delisted, `call_llm` retries with working free models
+  (`DEFAULT_FREE_FALLBACK_MODELS`) instead of failing every run. Falls back only
+  on model-unavailable errors — not auth (same key won't help) or rate-limit
+  (transient). Keeps the public demo alive when a single free model dies.
+
 ### Fixed
 - Generation failures no longer surface as a silent empty ranking (llnl#36).
   The real cause — missing/invalid API key, model unavailable/delisted, rate

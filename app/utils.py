@@ -2,7 +2,7 @@ import logging
 import os
 import random
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 from openai import OpenAI
@@ -61,44 +61,52 @@ def classify_llm_error(error_text: str) -> str:
 
 
 # --- LLM Interaction ---
-def call_llm(prompt: str, temperature: float = 0.7) -> str:
-    """
-    Calls an LLM via the OpenRouter API and returns the response. Handles retries.
-    """
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        # openai>=1 raises from the OpenAI() constructor on a missing key, so
-        # check before constructing the client.
-        logger.error("OPENROUTER_API_KEY environment variable not set.")
-        return "Error: OpenRouter API key not set."
+# Curated free models tried, in order, when the primary model is unavailable
+# or delisted. Keeps the public demo working when a single free model dies
+# (issue llnl#26). Ordered rather than random so behavior is deterministic and
+# testable; the intent of "randomly select a working free model" is resilience
+# across a pool, which this delivers.
+DEFAULT_FREE_FALLBACK_MODELS = [
+    "google/gemini-2.0-flash-exp:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "deepseek/deepseek-chat:free",
+    "mistralai/mistral-7b-instruct:free",
+]
 
-    client = OpenAI(
-        base_url=config.get("openrouter_base_url"),
-        api_key=api_key,
-    )
-    llm_model = config.get("llm_model")
+# Marker prefix identifying a model-unavailable outcome (drives fallback).
+_MODEL_UNAVAILABLE_PREFIX = "Error: Model unavailable or delisted"
+
+
+def _model_candidates(primary: str, fallbacks: Optional[List[str]]) -> List[str]:
+    """Ordered, de-duplicated candidate list: primary first, then fallbacks."""
+    candidates = [primary, *(fallbacks if fallbacks is not None else DEFAULT_FREE_FALLBACK_MODELS)]
+    ordered = []
+    for m in candidates:
+        if m and m not in ordered:
+            ordered.append(m)
+    return ordered
+
+
+def _attempt_model(client: "OpenAI", model: str, prompt: str, temperature: float) -> str:
+    """Single-model call with the existing retry/backoff. Returns the content or
+    an 'Error: ...' string; a model-unavailable result uses the marker prefix so
+    the caller can fall back to another model."""
     max_retries = config.get("max_retries", 3)
     initial_delay = config.get("initial_retry_delay", 1)
-
-    if not llm_model:
-        logger.error("LLM model not configured in config.yaml")
-        return "Error: LLM model not configured."
-
-    last_error_message = "API call failed after multiple retries."  # Default error
+    last_error_message = "API call failed after multiple retries."
 
     for attempt in range(max_retries):
         try:
             completion = client.chat.completions.create(
-                model=llm_model,
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
             )
             if completion.choices and len(completion.choices) > 0:
-                return completion.choices[0].message.content or ""  # Return empty string if content is None
+                return completion.choices[0].message.content or ""
             else:
                 logger.error("No choices in the LLM response: %s", completion)
                 last_error_message = f"No choices in the response: {completion}"
-                # Continue to retry if possible
 
         except Exception as e:
             error_str = redact_secrets(str(e))
@@ -112,7 +120,7 @@ def call_llm(prompt: str, temperature: float = 0.7) -> str:
             if "No endpoints found" in error_str or "not a valid model" in error_str or "404" in error_str:
                 logger.error(f"Model unavailable: {error_str}")
                 return (
-                    f"Error: Model unavailable or delisted ('{llm_model}'). "
+                    f"{_MODEL_UNAVAILABLE_PREFIX} ('{model}'). "
                     "The selected model may have been removed from OpenRouter or is temporarily unreachable. "
                     "Try selecting a different model. Details: " + error_str
                 )
@@ -129,9 +137,52 @@ def call_llm(prompt: str, temperature: float = 0.7) -> str:
                 time.sleep(wait_time)
             else:
                 logger.error("Max retries reached. Giving up.")
-                break  # Exit loop after last attempt
+                break
 
-    return f"Error: {last_error_message}"  # Return the last recorded error
+    return f"Error: {last_error_message}"
+
+
+def call_llm(
+    prompt: str,
+    temperature: float = 0.7,
+    model: Optional[str] = None,
+    fallback_models: Optional[List[str]] = None,
+) -> str:
+    """Calls an LLM via OpenRouter, returning the response text.
+
+    Tries the primary model (``model`` or ``config['llm_model']``) and, if it is
+    unavailable/delisted, automatically falls back to working free models
+    (issue llnl#26) so a single delisted model does not fail every run. Falls
+    back only on model-unavailable — not on auth (same key won't help) or
+    rate-limit (transient, already retried). Auth/parse/other errors and the
+    final model-unavailable error still propagate to the caller.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        # openai>=1 raises from the OpenAI() constructor on a missing key, so
+        # check before constructing the client.
+        logger.error("OPENROUTER_API_KEY environment variable not set.")
+        return "Error: OpenRouter API key not set."
+
+    client = OpenAI(
+        base_url=config.get("openrouter_base_url"),
+        api_key=api_key,
+    )
+    primary = model or config.get("llm_model")
+    if not primary:
+        logger.error("LLM model not configured in config.yaml")
+        return "Error: LLM model not configured."
+
+    candidates = _model_candidates(primary, fallback_models)
+    result = f"{_MODEL_UNAVAILABLE_PREFIX} (no candidates)."
+    for candidate in candidates:
+        result = _attempt_model(client, candidate, prompt, temperature)
+        if result.startswith(_MODEL_UNAVAILABLE_PREFIX):
+            logger.warning("Model '%s' unavailable; trying next fallback.", candidate)
+            continue
+        return result  # success, or a non-availability error we must not mask
+    # Every candidate was unavailable — surface the last model-unavailable error.
+    return result
 
 
 # --- Environment Detection ---
