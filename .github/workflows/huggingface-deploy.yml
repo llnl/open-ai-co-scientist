@@ -97,3 +97,13 @@ jobs:
             git commit -m "Deploy ${GITHUB_SHA}"
             git push
           fi
+
+      - name: Watch Hugging Face deployment status
+        if: ${{ github.event_name == 'push' || github.event.inputs.dry_run == 'false' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+        run: |
+          test -n "$HF_TOKEN"
+          test -n "$HF_SPACE_ID"
+          python scripts/watch_huggingface_space.py --timeout-seconds 900 --poll-seconds 15

@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
 
@@ -64,6 +66,7 @@ def test_build_pr_body_includes_publication_gate_and_release_tag():
     assert "Public upstream CI is green" in body
     assert "results/`, `.env`, `.worktree/`, and `.audit/`" in body
     assert "tag the upstream merge commit as `v0.1.0`" in body
+    assert "Space status" in body
 
 
 def load_workflow(name: str) -> dict:
@@ -95,9 +98,62 @@ def test_huggingface_deploy_workflow_runs_checks_before_deploy():
     steps = workflow["jobs"]["deploy"]["steps"]
     step_names = [step.get("name", "") for step in steps]
     assert step_names.index("Lint and offline tests") < step_names.index("Deploy to Hugging Face Space")
+    assert step_names.index("Deploy to Hugging Face Space") < step_names.index("Watch Hugging Face deployment status")
 
     joined_steps = "\n".join(str(step) for step in steps)
     assert "HF_TOKEN" in joined_steps
     assert "HF_SPACE_ID" in joined_steps
     assert "--exclude .env" in joined_steps
     assert "--exclude results" in joined_steps
+    assert "scripts/watch_huggingface_space.py" in joined_steps
+
+
+def test_huggingface_readme_sdk_version_matches_requirements():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    requirements = Path("requirements.txt").read_text(encoding="utf-8")
+
+    sdk_version_line = next(line for line in readme.splitlines() if line.startswith("sdk_version:"))
+    gradio_line = next(line for line in requirements.splitlines() if line.startswith("gradio=="))
+
+    assert sdk_version_line == f"sdk_version: {gradio_line.split('==', 1)[1]}"
+
+
+def test_watch_huggingface_space_succeeds_when_space_runs():
+    from scripts.watch_huggingface_space import watch_space
+
+    client = SimpleNamespace(get_space_runtime=lambda repo_id, token=None: SimpleNamespace(stage="RUNNING"))
+
+    assert watch_space("user/space", client=client, timeout_seconds=1, poll_seconds=1) == "RUNNING"
+
+
+def test_watch_huggingface_space_fails_on_build_error():
+    from scripts.watch_huggingface_space import watch_space
+
+    client = SimpleNamespace(get_space_runtime=lambda repo_id, token=None: SimpleNamespace(stage="BUILD_ERROR"))
+
+    try:
+        watch_space("user/space", client=client, timeout_seconds=1, poll_seconds=1)
+    except RuntimeError as exc:
+        assert "BUILD_ERROR" in str(exc)
+    else:
+        raise AssertionError("BUILD_ERROR did not fail the watcher")
+
+
+def test_watch_huggingface_space_times_out_without_terminal_stage():
+    from scripts.watch_huggingface_space import watch_space
+
+    client = SimpleNamespace(get_space_runtime=lambda repo_id, token=None: SimpleNamespace(stage="BUILDING"))
+
+    with (
+        patch("scripts.watch_huggingface_space.time.sleep"),
+        patch(
+            "scripts.watch_huggingface_space.time.monotonic",
+            side_effect=[0, 0, 2],
+        ),
+    ):
+        try:
+            watch_space("user/space", client=client, timeout_seconds=1, poll_seconds=1)
+        except TimeoutError as exc:
+            assert "BUILDING" in str(exc)
+        else:
+            raise AssertionError("non-terminal stage did not time out")

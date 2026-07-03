@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed the Hugging Face Space metadata to match the pinned Gradio dependency
+  and added post-push Space status polling so build/runtime errors fail the
+  deployment workflow instead of being missed (loop#14).
+
 - Automatic model fallback (llnl#26): when the configured/selected model is
   unavailable, delisted, rate-limited, or erroring, `call_llm` falls back to a
   **working free model fetched live from OpenRouter** (`fetch_free_models`, the
