@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not integration and not network'"
+markers = [
+    "integration: live LLM calls that cost money (needs OPENROUTER_API_KEY)",
+    "network: free external network access (arXiv API, HF model downloads)",
+]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["venv", ".worktree", "results"]
+
+[tool.ruff.lint]
+# Lenient starting baseline (see docs/loop-engineering-design.md §9 Phase -1 Step 4).
+select = ["E", "F", "I"]
+ignore = ["E501"]

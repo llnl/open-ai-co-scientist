@@ -1,126 +1,59 @@
-import logging
-import sys
-import os
+"""Tests for app.utils.similarity_score.
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
+Offline tests inject a stub embedding model into the module-level singleton;
+the real-model test downloads from Hugging Face and is marked `network`.
+"""
 
-# Create a standalone version of the similarity_score function for testing
-# This avoids issues with the logger in the main script
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+import pytest
+import torch
 
-# Global variable to store the sentence transformer model
-_sentence_transformer_model = None
+import app.utils as utils
 
-def get_sentence_transformer_model():
-    """
-    Returns a singleton instance of the sentence transformer model.
-    Loads the model only once to improve performance.
-    
-    Returns:
-        SentenceTransformer: The sentence transformer model.
-    """
-    global _sentence_transformer_model
-    if _sentence_transformer_model is None:
-        try:
-            logger.info("Loading sentence transformer model...")
-            # Using a smaller model for efficiency, can be replaced with larger models for better accuracy
-            _sentence_transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Sentence transformer model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load sentence transformer model: {e}")
-            raise
-    return _sentence_transformer_model
 
-def similarity_score(textA: str, textB: str) -> float:
-    """
-    Calculates a similarity score between two text strings using sentence embeddings
-    and cosine similarity.
+class _StubModel:
+    """Deterministic stand-in for SentenceTransformer (returns torch tensors,
+    matching what similarity_score expects from .encode(convert_to_tensor=True))."""
 
-    Args:
-        textA (str): The first text string.
-        textB (str): The second text string.
+    _vectors = {
+        "climate change agriculture": [1.0, 0.0, 0.0],
+        "climate change farming": [0.9, 0.1, 0.0],
+        "quantum computing": [0.0, 0.0, 1.0],
+    }
 
-    Returns:
-        float: A similarity score between 0 and 1 (inclusive), where 1 indicates
-              identical semantic meaning and 0 indicates completely different meanings.
-    """
-    try:
-        # Handle empty strings
-        if not textA.strip() or not textB.strip():
-            logger.warning("Empty string provided to similarity_score")
-            return 0.0
-            
-        # Get the model
-        model = get_sentence_transformer_model()
-        
-        # Generate embeddings
-        embedding_a = model.encode(textA, convert_to_tensor=True)
-        embedding_b = model.encode(textB, convert_to_tensor=True)
-        
-        # Convert to numpy arrays if they're tensors
-        if hasattr(embedding_a, 'cpu') and hasattr(embedding_b, 'cpu'):
-            embedding_a = embedding_a.cpu().numpy().reshape(1, -1)
-            embedding_b = embedding_b.cpu().numpy().reshape(1, -1)
-        
-        similarity = cosine_similarity(embedding_a, embedding_b)[0][0]
-        
-        # Ensure the result is between 0 and 1
-        similarity = float(max(0.0, min(1.0, similarity)))
-        
-        logger.info(f"Similarity score between texts: {similarity:.4f}")
-        return similarity
-    except Exception as e:
-        logger.error(f"Error calculating similarity score: {e}")
-        # Fallback to a default value in case of error
-        return 0.5
+    def encode(self, text, convert_to_tensor=False):
+        return torch.tensor(self._vectors.get(text, [0.5, 0.5, 0.5]))
 
-def test_similarity():
-    """Test the similarity_score function with various text pairs."""
-    
-    # Test cases with expected similarity relationships
-    test_cases = [
-        # Similar texts
-        ("The impact of climate change on global agriculture", 
-         "How climate change affects farming worldwide",
-         "high"),
-        
-        # Somewhat similar texts
-        ("Machine learning applications in healthcare", 
-         "Using artificial intelligence to improve medical diagnoses",
-         "medium"),
-        
-        # Different texts
-        ("Quantum computing fundamentals", 
-         "Sustainable urban planning strategies",
-         "low")
-    ]
-    
-    logger.info("Testing similarity_score function...")
-    
-    results = []
-    for i, (text1, text2, expected) in enumerate(test_cases):
-        logger.info(f"Test case {i+1}:")
-        logger.info(f"Text 1: {text1}")
-        logger.info(f"Text 2: {text2}")
-        logger.info(f"Expected similarity: {expected}")
-        
-        score = similarity_score(text1, text2)
-        results.append((score, expected))
-        
-        logger.info(f"Actual similarity score: {score:.4f}")
-        logger.info("-" * 50)
-    
-    # Verify that the relative ordering of similarities is correct
-    scores = [r[0] for r in results]
-    if scores[0] > scores[1] > scores[2]:
-        logger.info("✅ Test PASSED: Similarity scores have the expected relative ordering")
-    else:
-        logger.info("❌ Test FAILED: Similarity scores do not have the expected relative ordering")
-        logger.info(f"Expected: {results[0][0]} > {results[1][0]} > {results[2][0]}")
 
-if __name__ == "__main__":
-    test_similarity()
+@pytest.fixture
+def stub_model(monkeypatch):
+    monkeypatch.setattr(utils, "_sentence_transformer_model", _StubModel())
+
+
+def test_similar_texts_score_higher_than_different(stub_model):
+    similar = utils.similarity_score("climate change agriculture", "climate change farming")
+    different = utils.similarity_score("climate change agriculture", "quantum computing")
+    assert similar > different
+
+
+def test_score_clamped_to_unit_interval(stub_model):
+    score = utils.similarity_score("climate change agriculture", "climate change farming")
+    assert 0.0 <= score <= 1.0
+
+
+def test_empty_string_returns_zero(stub_model):
+    assert utils.similarity_score("", "anything") == 0.0
+    assert utils.similarity_score("anything", "   ") == 0.0
+
+
+@pytest.mark.network
+def test_real_model_relative_ordering():
+    """Downloads the real sentence-transformer model; run with `make test-all`."""
+    high = utils.similarity_score(
+        "The impact of climate change on global agriculture",
+        "How climate change affects farming worldwide",
+    )
+    low = utils.similarity_score(
+        "Quantum computing fundamentals",
+        "Sustainable urban planning strategies",
+    )
+    assert high > low

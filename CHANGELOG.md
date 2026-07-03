@@ -5,6 +5,31 @@ All notable changes to the AI Co-Scientist project will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Offline-by-default test suite: `integration`/`network` pytest markers, mocked
+  OpenRouter boundary tests, and credential-leak regression tests.
+- CI workflow (lint, offline tests, boot smoke) pinned to Python 3.12 with
+  CPU-only torch.
+- `pyproject.toml` (pytest + ruff config), pinned `requirements.txt`,
+  `requirements-dev.txt`, `.env.example`.
+- Makefile targets: `test`, `test-all`, `lint`, `fmt`, and per-issue worktree
+  helpers `wt`/`wt-clean`.
+- `AGENTS.md` (AI-agent instructions), `docs/loop/GOALS.md` (loop steering),
+  `scripts/setup_labels.sh` (loop label state machine).
+
+### Fixed
+- `call_llm` crashed with openai>=1 when `OPENROUTER_API_KEY` was unset instead
+  of returning the documented error message.
+- API keys are now redacted from log lines and user-facing error text
+  (`redact_secrets`).
+- `similarity_score` treats whitespace-only input as empty (returns 0.0).
+
+### Removed
+- Dead FastAPI-era `tests/test_api.py` (targeted the removed `app/api.py`) and
+  the stray `tests/test_graph.html` artifact.
+
 ## [1.1.0] - 2025-05-31
 
 ### Added - References Section and Literature Integration

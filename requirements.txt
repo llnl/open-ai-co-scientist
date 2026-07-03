@@ -1,12 +1,12 @@
-openai
-gradio
-pydantic
-PyYAML
-requests # Added for fetching models
-sentence-transformers
-scikit-learn
-torch # Or tensorflow - required by sentence-transformers
-numpy # Often a dependency of the above, good to list explicitly
-arxiv # arXiv API integration
-feedparser # For arXiv RSS feeds
-python-dateutil # Date handling for literature search
+openai==2.44.0
+gradio==6.19.0
+pydantic==2.13.4
+PyYAML==6.0.3
+requests==2.33.1  # Added for fetching models
+sentence-transformers==5.6.0
+scikit-learn==1.9.0
+torch==2.12.1  # Required by sentence-transformers; CI installs the CPU-only wheel
+numpy==2.5.0
+arxiv==4.0.0  # arXiv API integration
+feedparser==6.0.12  # For arXiv RSS feeds
+python-dateutil==2.9.0.post0  # Date handling for literature search
