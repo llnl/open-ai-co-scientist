@@ -9,6 +9,9 @@ URL="${OACS_LOCAL_URL:-http://127.0.0.1:7860}"
 if ! launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
   if [ ! -f "$PLIST" ]; then
     "$SCRIPT_DIR/install-launchagent.sh"
+    printf 'Installed and started Open AI Co-Scientist local test instance.\n'
+    printf 'Open or refresh: %s\n' "$URL"
+    exit 0
   fi
   launchctl bootstrap "gui/$(id -u)" "$PLIST"
 fi
