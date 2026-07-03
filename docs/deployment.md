@@ -2,6 +2,14 @@
 
 This guide covers strategies for deploying the Open AI Co-Scientist project to Hugging Face Spaces while controlling API costs from public usage.
 
+For the operator runbook that connects approved loop PRs, public upstream sync
+PRs, release tags, and Hugging Face deployment, see
+[`docs/upstream-release-process.md`](upstream-release-process.md).
+
+The upstream sync and Hugging Face deploy workflows are created in
+`.github/workflows/upstream-sync.yml` and
+`.github/workflows/huggingface-deploy.yml`.
+
 ## Problem Statement
 
 When deploying to public platforms like Hugging Face Spaces, you need to prevent users from freely selecting expensive models using your OpenRouter API key, which could lead to unexpected high costs.
