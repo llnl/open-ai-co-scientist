@@ -67,6 +67,26 @@ jobs:
           print("Gradio interface constructs OK")
           EOF
 
+      - name: Hugging Face dependency preflight
+        run: |
+          python -m venv /tmp/hf-preflight
+          /tmp/hf-preflight/bin/python -m pip install --upgrade pip
+          GRADIO_VERSION="$(python - <<'EOF'
+          from pathlib import Path
+          for line in Path("requirements.txt").read_text(encoding="utf-8").splitlines():
+              if line.startswith("gradio=="):
+                  print(line.split("==", 1)[1].split()[0])
+                  break
+          else:
+              raise SystemExit("requirements.txt must pin gradio==...")
+          EOF
+          )"
+          /tmp/hf-preflight/bin/pip install --dry-run \
+            -r requirements.txt \
+            "gradio[oauth,mcp]==${GRADIO_VERSION}" \
+            "uvicorn>=0.14.0" "websockets>=10.4" \
+            spaces
+
       - name: Deploy to Hugging Face Space
         if: ${{ github.event_name == 'push' || github.event.inputs.dry_run == 'false' }}
         env:
