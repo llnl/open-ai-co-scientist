@@ -97,6 +97,7 @@ def test_run_cycle_with_progress_streams_active_status(gradio_app_module, monkey
     assert any(
         "Active work: generating, reviewing, ranking, and evolving hypotheses." in update[0] for update in updates
     )
+    assert any("Elapsed:" in update[0] for update in updates)
     assert updates[-1][0].startswith("done")
     assert updates[-1][1:] == ("<p>done</p>", "<p>refs</p>")
     assert gradio_app_module.global_context.iteration_number == 1
