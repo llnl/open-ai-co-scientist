@@ -31,12 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -60,11 +60,12 @@ jobs:
             --head-ref HEAD \
             --body-file upstream-sync-pr.md
 
-      - name: Upload PR body artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: upstream-sync-pr-body
-          path: upstream-sync-pr.md
+      - name: Publish PR body summary
+        run: |
+          {
+            echo "## Upstream sync PR body"
+            cat upstream-sync-pr.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push sync branch and open upstream PR
         if: ${{ github.event.inputs.dry_run == 'false' }}

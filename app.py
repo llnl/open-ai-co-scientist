@@ -1,6 +1,9 @@
 import logging
 import os
-from typing import Dict, List, Optional, Tuple
+import threading
+import time
+from copy import deepcopy
+from typing import Any, Dict, List, Optional, Tuple
 
 import gradio as gr
 import requests
@@ -8,6 +11,7 @@ import requests
 from app.agents import SupervisorAgent
 
 # Import the existing app components
+from app.config import config
 from app.models import ContextMemory, ResearchGoal
 from app.run_store import get_reports_dir, history_html, report_file_url, save_run, write_report
 from app.tools.arxiv_search import ArxivSearchTool
@@ -24,6 +28,10 @@ global_context = ContextMemory()
 supervisor = SupervisorAgent()
 current_research_goal: Optional[ResearchGoal] = None
 available_models: List[str] = []
+SAFE_FALLBACK_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+CONFIGURED_LLM_MODEL = config.get("llm_model", SAFE_FALLBACK_LLM_MODEL)
+CYCLE_TIMEOUT_SECONDS = int(os.getenv("CO_SCIENTIST_CYCLE_TIMEOUT_SECONDS", "300"))
+CYCLE_PROGRESS_INTERVAL_SECONDS = 5
 
 # Configure logging for Gradio
 logging.basicConfig(level=logging.INFO)
@@ -66,11 +74,32 @@ def fetch_available_models():
         # Fallback to safe defaults
         if is_hf_spaces:
             # Use a known free model as fallback
-            available_models = ["google/gemini-2.0-flash-001:free"]
+            available_models = [SAFE_FALLBACK_LLM_MODEL]
         else:
-            available_models = ["google/gemini-2.0-flash-001"]
+            available_models = [SAFE_FALLBACK_LLM_MODEL]
 
     return available_models
+
+
+def get_default_model_choice(models: Optional[List[str]] = None) -> str:
+    """Prefer the configured free model, then any available free model."""
+    model_choices = models or available_models
+    if CONFIGURED_LLM_MODEL and ":free" in CONFIGURED_LLM_MODEL:
+        return CONFIGURED_LLM_MODEL
+    free_models = filter_free_models(model_choices)
+    if free_models:
+        return free_models[0]
+    return CONFIGURED_LLM_MODEL or SAFE_FALLBACK_LLM_MODEL
+
+
+def get_model_dropdown_choices(models: Optional[List[str]] = None) -> List[str]:
+    """Return model choices with a cost-safe default first and de-duplicated."""
+    model_choices = models or available_models
+    choices = [get_default_model_choice(model_choices)]
+    for model in model_choices:
+        if model and model not in choices:
+            choices.append(model)
+    return choices
 
 
 def get_deployment_status():
@@ -134,14 +163,13 @@ def set_research_goal(
         return error_msg, ""
 
 
-def run_cycle() -> Tuple[str, str, str]:
-    """Run a single research cycle with detailed step logging for debugging."""
+def execute_cycle(
+    research_goal: ResearchGoal,
+    context: ContextMemory,
+    cycle_supervisor: SupervisorAgent,
+) -> Dict[str, Any]:
+    """Run a cycle against the supplied state and return display-ready results."""
     import datetime
-
-    global current_research_goal, global_context, supervisor
-
-    if not current_research_goal:
-        return "❌ Error: No research goal set. Please set a research goal first.", "", ""
 
     # Prepare log file
     log_dir = "results"
@@ -149,15 +177,15 @@ def run_cycle() -> Tuple[str, str, str]:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_file = os.path.join(log_dir, f"app_log_{timestamp}.txt")
     with open(log_file, "w") as f:
-        f.write(f"LOGGING FOR THIS GOAL: {current_research_goal.description}\n")
+        f.write(f"LOGGING FOR THIS GOAL: {research_goal.description}\n")
         f.write("--- Endpoint /run_cycle START ---\n")
 
     try:
-        iteration = global_context.iteration_number + 1
+        iteration = context.iteration_number + 1
         logger.info(f"Running cycle {iteration}")
 
         # Run the cycle
-        cycle_details = supervisor.run_cycle(current_research_goal, global_context)
+        cycle_details = cycle_supervisor.run_cycle(research_goal, context)
 
         # Log all steps and hypotheses
         steps = cycle_details.get("steps", {})
@@ -172,7 +200,7 @@ def run_cycle() -> Tuple[str, str, str]:
         results_html = format_cycle_results(cycle_details, log_file=log_file)
 
         # Get references
-        references_html = get_references_html(cycle_details)
+        references_html = get_references_html(cycle_details, research_goal=research_goal)
 
         # Status message: surface the real cause when generation failed, instead
         # of reporting success over an empty result (issue llnl#36).
@@ -191,23 +219,142 @@ def run_cycle() -> Tuple[str, str, str]:
         else:
             status_msg = f"✅ Cycle {iteration} completed successfully! Log: {log_file}"
 
-        saved_run = save_run(
-            research_goal=current_research_goal,
-            cycle_details=cycle_details,
-            status=status_msg,
-            references_html=references_html,
-            results_html=results_html,
-            log_file=log_file,
-        )
-        report_path = write_report(saved_run)
-        status_msg = f"{status_msg}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}"
-
-        return status_msg, results_html, references_html
+        return {
+            "status": status_msg,
+            "results_html": results_html,
+            "references_html": references_html,
+            "cycle_details": cycle_details,
+            "log_file": log_file,
+        }
 
     except Exception as e:
         error_msg = f"❌ Error during cycle execution: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        return error_msg, "", ""
+        return {
+            "status": error_msg,
+            "results_html": "",
+            "references_html": "",
+            "cycle_details": {"iteration": context.iteration_number + 1, "steps": {}, "errors": [error_msg]},
+            "log_file": log_file,
+        }
+
+
+def persist_cycle_result(research_goal: ResearchGoal, cycle_result: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Persist an accepted cycle result and return Gradio output values."""
+    saved_run = save_run(
+        research_goal=research_goal,
+        cycle_details=cycle_result["cycle_details"],
+        status=cycle_result["status"],
+        references_html=cycle_result["references_html"],
+        results_html=cycle_result["results_html"],
+        log_file=cycle_result["log_file"],
+    )
+    report_path = write_report(saved_run)
+    status_msg = f"{cycle_result['status']}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}"
+    return status_msg, cycle_result["results_html"], cycle_result["references_html"]
+
+
+def run_cycle() -> Tuple[str, str, str]:
+    """Run a single research cycle with detailed step logging for debugging."""
+    global current_research_goal, global_context, supervisor
+
+    if not current_research_goal:
+        return "❌ Error: No research goal set. Please set a research goal first.", "", ""
+
+    return persist_cycle_result(
+        current_research_goal,
+        execute_cycle(current_research_goal, global_context, supervisor),
+    )
+
+
+def format_timeout_duration(timeout_seconds: float) -> str:
+    if timeout_seconds < 60:
+        return f"{timeout_seconds:g} seconds"
+    minutes = timeout_seconds / 60
+    if minutes.is_integer():
+        return f"{int(minutes)} minutes"
+    return f"{minutes:.1f} minutes"
+
+
+def timeout_results_html(timeout_seconds: float) -> str:
+    timeout_duration = format_timeout_duration(timeout_seconds)
+    return f"""
+    <div style="margin: 20px 0; padding: 15px; border: 2px solid #e67e22; border-radius: 8px; background-color: #fff8ee;">
+        <h3>Cycle stopped at the time limit</h3>
+        <p>The run exceeded the {timeout_duration} upper limit before the app received a completed cycle.</p>
+        <p>Try fewer hypotheses, a different model, or a later retry if the model provider is slow.</p>
+    </div>
+    """
+
+
+def run_cycle_with_progress(
+    timeout_seconds: int = CYCLE_TIMEOUT_SECONDS,
+    poll_seconds: float = CYCLE_PROGRESS_INTERVAL_SECONDS,
+):
+    """Run a cycle in the background and stream status updates until done or timed out."""
+    global global_context
+
+    if not current_research_goal:
+        yield "❌ Error: No research goal set. Please set a research goal first.", "", ""
+        return
+
+    run_goal = current_research_goal
+    run_context = deepcopy(global_context)
+    run_supervisor = SupervisorAgent()
+    result: Dict[str, Dict[str, Any]] = {}
+
+    def worker():
+        result["value"] = execute_cycle(run_goal, run_context, run_supervisor)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    iteration = global_context.iteration_number + 1
+
+    while thread.is_alive():
+        elapsed = time.monotonic() - started
+        if elapsed >= timeout_seconds:
+            timeout_duration = format_timeout_duration(timeout_seconds)
+            timeout_status = (
+                f"⚠️ Cycle {iteration} timed out after {timeout_duration}. "
+                "The app stopped waiting for the model provider instead of leaving the run spinning."
+            )
+            timeout_html = timeout_results_html(timeout_seconds)
+            saved_run = save_run(
+                research_goal=run_goal,
+                cycle_details={
+                    "iteration": iteration,
+                    "steps": {},
+                    "errors": [timeout_status],
+                },
+                status=timeout_status,
+                references_html="",
+                results_html=timeout_html,
+                log_file="",
+            )
+            report_path = write_report(saved_run)
+            yield (
+                f"{timeout_status}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}",
+                timeout_html,
+                "",
+            )
+            return
+
+        status = (
+            f"⏳ Cycle {iteration} is running.\n"
+            "Active work: generating, reviewing, ranking, and evolving hypotheses.\n"
+            f"Upper limit: {format_timeout_duration(timeout_seconds)}."
+        )
+        yield status, "<p>Cycle is still running. Results will appear when the current step completes.</p>", ""
+        thread.join(timeout=min(poll_seconds, max(timeout_seconds - elapsed, 0.1)))
+
+    cycle_result = result.get("value")
+    if not cycle_result:
+        yield "❌ Error: Cycle ended without a result.", "", ""
+        return
+    if current_research_goal is run_goal:
+        global_context = run_context
+    yield persist_cycle_result(run_goal, cycle_result)
 
 
 def format_cycle_results(cycle_details: Dict, log_file: str = None) -> str:
@@ -489,15 +636,14 @@ def format_cycle_results(cycle_details: Dict, log_file: str = None) -> str:
     return html
 
 
-def get_references_html(cycle_details: Dict) -> str:
+def get_references_html(cycle_details: Dict, research_goal: Optional[ResearchGoal] = None) -> str:
     """Get references HTML for the cycle."""
     try:
         # Search for arXiv papers related to the research goal
-        if current_research_goal and current_research_goal.description:
+        goal = research_goal or current_research_goal
+        if goal and goal.description:
             arxiv_tool = ArxivSearchTool(max_results=5)
-            papers = arxiv_tool.search_papers(
-                query=current_research_goal.description, max_results=5, sort_by="relevance"
-            )
+            papers = arxiv_tool.search_papers(query=goal.description, max_results=5, sort_by="relevance")
 
             if papers:
                 html = "<h3>📚 Related arXiv Papers</h3>"
@@ -568,11 +714,12 @@ def create_gradio_interface():
 
                 # Advanced settings
                 with gr.Accordion("⚙️ Advanced Settings", open=False):
+                    default_model = get_default_model_choice()
                     model_dropdown = gr.Dropdown(
-                        choices=["-- Select Model --"] + available_models,
-                        value="-- Select Model --",
-                        label="LLM Model",
-                        info="Leave as default to use system default model",
+                        choices=get_model_dropdown_choices(),
+                        value=default_model,
+                        label=f"LLM Model (default: {default_model})",
+                        info="A free default model is selected when available.",
                     )
 
                     with gr.Row():
@@ -653,10 +800,14 @@ def create_gradio_interface():
                 elo_k_factor,
                 top_k_hypotheses,
             )
-            # Run cycle
-            status, results, references = run_cycle()
-            # Combine status messages
-            return f"{status_msg}\n\n{status}", results, references, history_html()
+            yield (
+                f"{status_msg}\n\nStarting cycle with a {format_timeout_duration(CYCLE_TIMEOUT_SECONDS)} limit.",
+                "<p>Starting cycle...</p>",
+                "",
+                history_html(),
+            )
+            for status, results, references in run_cycle_with_progress():
+                yield f"{status_msg}\n\n{status}", results, references, history_html()
 
         run_cycle_btn.click(
             fn=run_full_cycle,
