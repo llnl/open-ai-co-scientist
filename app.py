@@ -8,6 +8,7 @@ import requests
 from app.agents import SupervisorAgent
 
 # Import the existing app components
+from app.config import config
 from app.models import ContextMemory, ResearchGoal
 from app.run_store import get_reports_dir, history_html, report_file_url, save_run, write_report
 from app.tools.arxiv_search import ArxivSearchTool
@@ -24,6 +25,7 @@ global_context = ContextMemory()
 supervisor = SupervisorAgent()
 current_research_goal: Optional[ResearchGoal] = None
 available_models: List[str] = []
+DEFAULT_LLM_MODEL = config.get("llm_model", "google/gemini-flash-1.5")
 
 # Configure logging for Gradio
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +73,15 @@ def fetch_available_models():
             available_models = ["google/gemini-2.0-flash-001"]
 
     return available_models
+
+
+def get_model_dropdown_choices(models: Optional[List[str]] = None) -> List[str]:
+    """Return model choices with the configured default first and de-duplicated."""
+    choices = [DEFAULT_LLM_MODEL]
+    for model in models or available_models:
+        if model and model not in choices:
+            choices.append(model)
+    return choices
 
 
 def get_deployment_status():
@@ -569,10 +580,10 @@ def create_gradio_interface():
                 # Advanced settings
                 with gr.Accordion("⚙️ Advanced Settings", open=False):
                     model_dropdown = gr.Dropdown(
-                        choices=["-- Select Model --"] + available_models,
-                        value="-- Select Model --",
-                        label="LLM Model",
-                        info="Leave as default to use system default model",
+                        choices=get_model_dropdown_choices(),
+                        value=DEFAULT_LLM_MODEL,
+                        label=f"LLM Model (default: {DEFAULT_LLM_MODEL})",
+                        info="The configured default model is selected.",
                     )
 
                     with gr.Row():
