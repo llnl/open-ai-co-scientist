@@ -42,8 +42,10 @@ cd .worktree/7
 6. The public upstream PR runs public CI and receives the final human review.
 7. The upstream PR is merged with a merge commit, not squash, so the private
    and public histories remain easy to compare.
-8. The upstream merge is tagged as a release candidate or release.
-9. Hugging Face deploys from the upstream release path after the deployment
+8. The upstream merge from `sync/v*` automatically triggers the Hugging Face
+   deploy workflow.
+9. The upstream merge may be tagged after deployment for release bookkeeping.
+10. Hugging Face deploys from the upstream release path after the deployment
    checks pass.
 
 ## Automation Created for This Process
@@ -53,7 +55,7 @@ The process is implemented by these files:
 | File | Purpose |
 |---|---|
 | `.github/workflows/upstream-sync.yml` | Manual workflow that prepares a public upstream sync PR. It defaults to dry-run mode and uploads the generated PR body as an artifact. |
-| `.github/workflows/huggingface-deploy.yml` | Release-tag and manual workflow that runs lint, offline tests, an app boot smoke test, then deploys to the Hugging Face Space. |
+| `.github/workflows/huggingface-deploy.yml` | Upstream-sync merge, release-tag, and manual workflow that runs lint, offline tests, dependency preflight, app boot smoke, then deploys to the Hugging Face Space and watches status. |
 | `scripts/prepare_upstream_release.py` | Testable helper used by the sync workflow to validate release versions, compute the sync branch, collect commit summaries, and generate the upstream PR body. |
 | `tests/test_release_process.py` | Offline tests for release-helper behavior and workflow safety invariants. |
 
@@ -106,7 +108,7 @@ gh pr create \
 
 Or run the manual `Upstream Sync PR` workflow:
 
-1. Set `version` to the intended release tag, for example `v0.1.0`.
+1. Set `version` to the intended release candidate name, for example `v0.1.0`.
 2. Keep `dry_run=true` first and review the uploaded PR body artifact.
 3. Re-run with `dry_run=false` only after the dry-run output is correct and
    `UPSTREAM_SYNC_TOKEN` is configured.
@@ -136,8 +138,8 @@ the failure is explicitly understood and documented in the PR.
 
 ## Release Tagging
 
-After the upstream PR merges, tag the upstream merge commit. Use annotated tags
-for releases:
+After the upstream PR merges and Hugging Face deployment is healthy, you may tag
+the upstream merge commit for release bookkeeping. Use annotated tags:
 
 ```bash
 git fetch upstream
@@ -147,10 +149,9 @@ git tag -a v0.1.0 -m "Release v0.1.0"
 git push upstream v0.1.0
 ```
 
-The tag is the stable deployment input for Hugging Face and for benchmark or
-release-note workflows. If the public PR is only a release candidate, use an
-`rc` suffix and avoid updating the production Space until it passes the live
-smoke test.
+The tag is a stable release pointer for benchmark or release-note workflows.
+Hugging Face deployment does not wait for this tag; the merge from `sync/v*` to
+`main` triggers deployment automatically.
 
 ## Hugging Face Deployment
 
@@ -161,10 +162,10 @@ There are two supported deployment modes.
 Use manual deployment while autonomy is still at Level 0 or Level 1 in
 `docs/loop/GOALS.md`.
 
-1. Merge and tag the upstream release.
+1. Merge the upstream sync PR.
 2. Confirm the Hugging Face Space has `OPENROUTER_API_KEY` set as a secret.
 3. Confirm the Space is configured for the Gradio app entrypoint `app.py`.
-4. Push or mirror the tagged upstream tree to the Space repo.
+4. Push or mirror the upstream merge tree to the Space repo.
 5. Watch the Space build logs or run `scripts/watch_huggingface_space.py`
    until the Space reaches `RUNNING`.
 6. If the Space reports `BUILD_ERROR`, `RUNTIME_ERROR`, or another terminal
@@ -179,9 +180,9 @@ sync PRs have been clean, and live smoke tests are reliable.
 
 The recommended workflow is:
 
-1. Trigger only on upstream release tags such as `v*`, not on every private
-   loop merge.
-2. Check out the exact upstream tag.
+1. Trigger on merges from `sync/v*` into upstream `main`, release tags such as
+   `v*`, or an explicit manual dispatch.
+2. Check out the exact upstream merge, tag, or manually selected ref.
 3. Run `make lint` and `make test` without API keys.
 4. Run the app boot smoke test.
 5. Push the release tree to the Hugging Face Space repo using a
