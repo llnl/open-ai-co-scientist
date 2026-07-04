@@ -75,6 +75,24 @@ def load_workflow(name: str) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def test_github_actions_use_node24_compatible_versions():
+    node20_action_pins = {
+        "actions/checkout@v4",
+        "actions/setup-python@v5",
+        "actions/upload-artifact@v4",
+        "actions/upload-artifact@v5",
+        "actions/download-artifact@v4",
+        "actions/download-artifact@v5",
+    }
+
+    for workflow_path in Path(".github/workflows").glob("*.yml"):
+        workflow = load_workflow(workflow_path.name)
+        for job in workflow.get("jobs", {}).values():
+            for step in job.get("steps", []):
+                action = step.get("uses")
+                assert action not in node20_action_pins, f"{workflow_path}: {action}"
+
+
 def test_upstream_sync_workflow_is_manual_and_dry_run_by_default():
     workflow = load_workflow("upstream-sync.yml")
 
