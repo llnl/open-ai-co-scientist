@@ -46,3 +46,23 @@ def test_gradio_interface_constructs_without_network(gradio_app_module):
     assert demo is not None
     # The fetch failed, so the module must have fallen back to a non-empty default model list.
     assert gradio_app_module.available_models
+
+
+def test_default_model_is_selected_and_first_choice(gradio_app_module):
+    gradio_app_module.available_models = [
+        "another/model",
+        gradio_app_module.CONFIGURED_LLM_MODEL,
+    ]
+
+    choices = gradio_app_module.get_model_dropdown_choices()
+
+    assert choices[0] == gradio_app_module.CONFIGURED_LLM_MODEL
+    assert choices.count(gradio_app_module.CONFIGURED_LLM_MODEL) == 1
+
+
+def test_free_model_is_default_when_configured_model_is_not_free(gradio_app_module, monkeypatch):
+    monkeypatch.setattr(gradio_app_module, "CONFIGURED_LLM_MODEL", "paid/model")
+
+    choices = gradio_app_module.get_model_dropdown_choices(["paid/model", "free/model:free"])
+
+    assert choices[0] == "free/model:free"
