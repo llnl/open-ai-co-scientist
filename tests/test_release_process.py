@@ -49,7 +49,7 @@ def test_extract_issue_numbers_preserves_order_and_deduplicates():
     assert extract_issue_numbers(lines) == ["7", "12"]
 
 
-def test_build_pr_body_includes_publication_gate_and_release_tag():
+def test_build_pr_body_includes_publication_gate_and_auto_deploy_contract():
     body = build_pr_body(
         ReleasePlan(
             version="v0.1.0",
@@ -61,11 +61,12 @@ def test_build_pr_body_includes_publication_gate_and_release_tag():
         )
     )
 
-    assert "Release v0.1.0" in body
+    assert "`v0.1.0` release candidate" in body
     assert "Fixes #7" in body
     assert "Public upstream CI is green" in body
     assert "results/`, `.env`, `.worktree/`, and `.audit/`" in body
-    assert "tag the upstream merge commit as `v0.1.0`" in body
+    assert "Merging this PR with a merge commit triggers the Hugging Face deploy workflow" in body
+    assert "The tag is not required to deploy" in body
     assert "Space status" in body
 
 
@@ -93,7 +94,9 @@ def test_huggingface_deploy_workflow_runs_checks_before_deploy():
     workflow = load_workflow("huggingface-deploy.yml")
 
     assert "v*" in workflow[True]["push"]["tags"]
+    assert "main" in workflow[True]["push"]["branches"]
     assert workflow["permissions"] == {"contents": "read"}
+    assert "from llnl/sync/v" in workflow["jobs"]["deploy"]["if"]
 
     steps = workflow["jobs"]["deploy"]["steps"]
     step_names = [step.get("name", "") for step in steps]
@@ -129,6 +132,14 @@ def test_huggingface_requirements_match_gradio_mcp_constraints():
 
     assert "gradio==6.19.0" in requirements
     assert "pydantic==2.12.5" in requirements
+
+
+def test_upstream_sync_workflow_uses_sync_candidate_language():
+    workflow = load_workflow("upstream-sync.yml")
+
+    joined_steps = "\n".join(str(step) for step in workflow["jobs"]["prepare"]["steps"])
+    assert "Sync $VERSION candidate from loop repo" in joined_steps
+    assert "Release $VERSION from loop repo" not in joined_steps
 
 
 def test_watch_huggingface_space_succeeds_when_space_runs():
