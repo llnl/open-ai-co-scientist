@@ -63,7 +63,7 @@ def build_pr_body(plan: ReleasePlan) -> str:
 
     return f"""## Summary
 
-Release {plan.version} from the private loop repo to `{plan.upstream_repo}`.
+Sync the private loop repo to `{plan.upstream_repo}` for the `{plan.version}` release candidate.
 
 ## Included Commits
 
@@ -78,14 +78,18 @@ Release {plan.version} from the private loop repo to `{plan.upstream_repo}`.
 - [ ] Public upstream CI is green.
 - [ ] Sync diff was reviewed for secrets, private trails, generated outputs, and accidental local files.
 - [ ] `results/`, `.env`, `.worktree/`, and `.audit/` are absent from the public diff.
-- [ ] Hugging Face deployment notes are understood before tagging/deploying.
-- [ ] If deploying, Hugging Face reaches RUNNING after the Space rebuild; build/runtime errors become follow-up fixes before release sign-off.
+- [ ] Hugging Face deployment notes are understood before merging.
+- [ ] After merge, Hugging Face reaches RUNNING; build/runtime errors become follow-up fixes before release sign-off.
 
 ## Deployment
 
-After this PR merges with a merge commit, tag the upstream merge commit as `{plan.version}`.
-That tag is the input for Hugging Face deployment. The deploy workflow watches
-the Space status after pushing and fails on build or runtime errors.
+Merging this PR with a merge commit triggers the Hugging Face deploy workflow
+because the merge commit comes from `{plan.sync_branch}`. The deploy workflow
+checks the Hugging Face dependency resolver before pushing to the Space, then
+watches the Space status and fails on build or runtime errors.
+
+After the deploy is healthy, optionally tag the upstream merge commit as
+`{plan.version}` for release bookkeeping. The tag is not required to deploy.
 """
 
 

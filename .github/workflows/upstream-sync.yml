@@ -83,5 +83,5 @@ jobs:
             --repo "$UPSTREAM_REPO" \
             --base main \
             --head "$SYNC_BRANCH" \
-            --title "Release $VERSION from loop repo" \
+            --title "Sync $VERSION candidate from loop repo" \
             --body-file upstream-sync-pr.md
