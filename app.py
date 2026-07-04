@@ -1,5 +1,7 @@
 import logging
 import os
+import threading
+import time
 from typing import Dict, List, Optional, Tuple
 
 import gradio as gr
@@ -27,6 +29,8 @@ current_research_goal: Optional[ResearchGoal] = None
 available_models: List[str] = []
 SAFE_FALLBACK_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 CONFIGURED_LLM_MODEL = config.get("llm_model", SAFE_FALLBACK_LLM_MODEL)
+CYCLE_TIMEOUT_SECONDS = int(os.getenv("CO_SCIENTIST_CYCLE_TIMEOUT_SECONDS", "300"))
+CYCLE_PROGRESS_INTERVAL_SECONDS = 5
 
 # Configure logging for Gradio
 logging.basicConfig(level=logging.INFO)
@@ -232,6 +236,85 @@ def run_cycle() -> Tuple[str, str, str]:
         error_msg = f"❌ Error during cycle execution: {str(e)}"
         logger.error(error_msg, exc_info=True)
         return error_msg, "", ""
+
+
+def format_timeout_duration(timeout_seconds: float) -> str:
+    if timeout_seconds < 60:
+        return f"{timeout_seconds:g} seconds"
+    minutes = timeout_seconds / 60
+    if minutes.is_integer():
+        return f"{int(minutes)} minutes"
+    return f"{minutes:.1f} minutes"
+
+
+def timeout_results_html(timeout_seconds: float) -> str:
+    timeout_duration = format_timeout_duration(timeout_seconds)
+    return f"""
+    <div style="margin: 20px 0; padding: 15px; border: 2px solid #e67e22; border-radius: 8px; background-color: #fff8ee;">
+        <h3>Cycle stopped at the time limit</h3>
+        <p>The run exceeded the {timeout_duration} upper limit before the app received a completed cycle.</p>
+        <p>Try fewer hypotheses, a different model, or a later retry if the model provider is slow.</p>
+    </div>
+    """
+
+
+def run_cycle_with_progress(
+    timeout_seconds: int = CYCLE_TIMEOUT_SECONDS,
+    poll_seconds: float = CYCLE_PROGRESS_INTERVAL_SECONDS,
+):
+    """Run a cycle in the background and stream status updates until done or timed out."""
+    if not current_research_goal:
+        yield "❌ Error: No research goal set. Please set a research goal first.", "", ""
+        return
+
+    result: Dict[str, Tuple[str, str, str]] = {}
+
+    def worker():
+        result["value"] = run_cycle()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    iteration = global_context.iteration_number + 1
+
+    while thread.is_alive():
+        elapsed = time.monotonic() - started
+        if elapsed >= timeout_seconds:
+            timeout_duration = format_timeout_duration(timeout_seconds)
+            timeout_status = (
+                f"⚠️ Cycle {iteration} timed out after {timeout_duration}. "
+                "The app stopped waiting for the model provider instead of leaving the run spinning."
+            )
+            timeout_html = timeout_results_html(timeout_seconds)
+            saved_run = save_run(
+                research_goal=current_research_goal,
+                cycle_details={
+                    "iteration": iteration,
+                    "steps": {},
+                    "errors": [timeout_status],
+                },
+                status=timeout_status,
+                references_html="",
+                results_html=timeout_html,
+                log_file="",
+            )
+            report_path = write_report(saved_run)
+            yield (
+                f"{timeout_status}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}",
+                timeout_html,
+                "",
+            )
+            return
+
+        status = (
+            f"⏳ Cycle {iteration} is running.\n"
+            "Active work: generating, reviewing, ranking, and evolving hypotheses.\n"
+            f"Upper limit: {format_timeout_duration(timeout_seconds)}."
+        )
+        yield status, "<p>Cycle is still running. Results will appear when the current step completes.</p>", ""
+        thread.join(timeout=min(poll_seconds, max(timeout_seconds - elapsed, 0.1)))
+
+    yield result.get("value", ("❌ Error: Cycle ended without a result.", "", ""))
 
 
 def format_cycle_results(cycle_details: Dict, log_file: str = None) -> str:
@@ -678,10 +761,14 @@ def create_gradio_interface():
                 elo_k_factor,
                 top_k_hypotheses,
             )
-            # Run cycle
-            status, results, references = run_cycle()
-            # Combine status messages
-            return f"{status_msg}\n\n{status}", results, references, history_html()
+            yield (
+                f"{status_msg}\n\nStarting cycle with a {format_timeout_duration(CYCLE_TIMEOUT_SECONDS)} limit.",
+                "<p>Starting cycle...</p>",
+                "",
+                history_html(),
+            )
+            for status, results, references in run_cycle_with_progress():
+                yield f"{status_msg}\n\n{status}", results, references, history_html()
 
         run_cycle_btn.click(
             fn=run_full_cycle,
