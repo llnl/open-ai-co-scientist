@@ -75,6 +75,13 @@ def load_workflow(name: str) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def test_github_actions_use_node24_compatible_versions():
+    for workflow_path in Path(".github/workflows").glob("*.yml"):
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        assert "actions/checkout@v4" not in workflow_text
+        assert "actions/setup-python@v5" not in workflow_text
+
+
 def test_upstream_sync_workflow_is_manual_and_dry_run_by_default():
     workflow = load_workflow("upstream-sync.yml")
 
