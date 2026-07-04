@@ -98,6 +98,7 @@ def test_huggingface_deploy_workflow_runs_checks_before_deploy():
     steps = workflow["jobs"]["deploy"]["steps"]
     step_names = [step.get("name", "") for step in steps]
     assert step_names.index("Lint and offline tests") < step_names.index("Deploy to Hugging Face Space")
+    assert step_names.index("Hugging Face dependency preflight") < step_names.index("Deploy to Hugging Face Space")
     assert step_names.index("Deploy to Hugging Face Space") < step_names.index("Watch Hugging Face deployment status")
 
     joined_steps = "\n".join(str(step) for step in steps)
@@ -105,17 +106,29 @@ def test_huggingface_deploy_workflow_runs_checks_before_deploy():
     assert "HF_SPACE_ID" in joined_steps
     assert "--exclude .env" in joined_steps
     assert "--exclude results" in joined_steps
+    assert "gradio[oauth,mcp]" in joined_steps
+    assert "pip install --dry-run" in joined_steps
     assert "scripts/watch_huggingface_space.py" in joined_steps
 
 
-def test_huggingface_readme_sdk_version_matches_requirements():
+def test_huggingface_readme_metadata_matches_runtime_pins():
     readme = Path("README.md").read_text(encoding="utf-8")
     requirements = Path("requirements.txt").read_text(encoding="utf-8")
+    workflow = load_workflow("huggingface-deploy.yml")
 
     sdk_version_line = next(line for line in readme.splitlines() if line.startswith("sdk_version:"))
+    python_version_line = next(line for line in readme.splitlines() if line.startswith("python_version:"))
     gradio_line = next(line for line in requirements.splitlines() if line.startswith("gradio=="))
 
     assert sdk_version_line == f"sdk_version: {gradio_line.split('==', 1)[1]}"
+    assert python_version_line == f"python_version: {workflow['jobs']['deploy']['steps'][1]['with']['python-version']}"
+
+
+def test_huggingface_requirements_match_gradio_mcp_constraints():
+    requirements = Path("requirements.txt").read_text(encoding="utf-8")
+
+    assert "gradio==6.19.0" in requirements
+    assert "pydantic==2.12.5" in requirements
 
 
 def test_watch_huggingface_space_succeeds_when_space_runs():

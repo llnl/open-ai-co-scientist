@@ -1,6 +1,6 @@
 openai==2.44.0
 gradio==6.19.0
-pydantic==2.13.4
+pydantic==2.12.5
 PyYAML==6.0.3
 requests==2.33.1  # Added for fetching models
 sentence-transformers==5.6.0
