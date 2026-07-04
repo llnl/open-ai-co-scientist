@@ -25,7 +25,8 @@ global_context = ContextMemory()
 supervisor = SupervisorAgent()
 current_research_goal: Optional[ResearchGoal] = None
 available_models: List[str] = []
-DEFAULT_LLM_MODEL = config.get("llm_model", "google/gemini-flash-1.5")
+SAFE_FALLBACK_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+CONFIGURED_LLM_MODEL = config.get("llm_model", SAFE_FALLBACK_LLM_MODEL)
 
 # Configure logging for Gradio
 logging.basicConfig(level=logging.INFO)
@@ -68,17 +69,29 @@ def fetch_available_models():
         # Fallback to safe defaults
         if is_hf_spaces:
             # Use a known free model as fallback
-            available_models = ["google/gemini-2.0-flash-001:free"]
+            available_models = [SAFE_FALLBACK_LLM_MODEL]
         else:
-            available_models = ["google/gemini-2.0-flash-001"]
+            available_models = [SAFE_FALLBACK_LLM_MODEL]
 
     return available_models
 
 
+def get_default_model_choice(models: Optional[List[str]] = None) -> str:
+    """Prefer the configured free model, then any available free model."""
+    model_choices = models or available_models
+    if CONFIGURED_LLM_MODEL and ":free" in CONFIGURED_LLM_MODEL:
+        return CONFIGURED_LLM_MODEL
+    free_models = filter_free_models(model_choices)
+    if free_models:
+        return free_models[0]
+    return CONFIGURED_LLM_MODEL or SAFE_FALLBACK_LLM_MODEL
+
+
 def get_model_dropdown_choices(models: Optional[List[str]] = None) -> List[str]:
-    """Return model choices with the configured default first and de-duplicated."""
-    choices = [DEFAULT_LLM_MODEL]
-    for model in models or available_models:
+    """Return model choices with a cost-safe default first and de-duplicated."""
+    model_choices = models or available_models
+    choices = [get_default_model_choice(model_choices)]
+    for model in model_choices:
         if model and model not in choices:
             choices.append(model)
     return choices
@@ -579,11 +592,12 @@ def create_gradio_interface():
 
                 # Advanced settings
                 with gr.Accordion("⚙️ Advanced Settings", open=False):
+                    default_model = get_default_model_choice()
                     model_dropdown = gr.Dropdown(
                         choices=get_model_dropdown_choices(),
-                        value=DEFAULT_LLM_MODEL,
-                        label=f"LLM Model (default: {DEFAULT_LLM_MODEL})",
-                        info="The configured default model is selected.",
+                        value=default_model,
+                        label=f"LLM Model (default: {default_model})",
+                        info="A free default model is selected when available.",
                     )
 
                     with gr.Row():
