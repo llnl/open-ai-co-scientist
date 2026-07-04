@@ -2,7 +2,8 @@ import logging
 import os
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from copy import deepcopy
+from typing import Any, Dict, List, Optional, Tuple
 
 import gradio as gr
 import requests
@@ -162,14 +163,13 @@ def set_research_goal(
         return error_msg, ""
 
 
-def run_cycle() -> Tuple[str, str, str]:
-    """Run a single research cycle with detailed step logging for debugging."""
+def execute_cycle(
+    research_goal: ResearchGoal,
+    context: ContextMemory,
+    cycle_supervisor: SupervisorAgent,
+) -> Dict[str, Any]:
+    """Run a cycle against the supplied state and return display-ready results."""
     import datetime
-
-    global current_research_goal, global_context, supervisor
-
-    if not current_research_goal:
-        return "❌ Error: No research goal set. Please set a research goal first.", "", ""
 
     # Prepare log file
     log_dir = "results"
@@ -177,15 +177,15 @@ def run_cycle() -> Tuple[str, str, str]:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_file = os.path.join(log_dir, f"app_log_{timestamp}.txt")
     with open(log_file, "w") as f:
-        f.write(f"LOGGING FOR THIS GOAL: {current_research_goal.description}\n")
+        f.write(f"LOGGING FOR THIS GOAL: {research_goal.description}\n")
         f.write("--- Endpoint /run_cycle START ---\n")
 
     try:
-        iteration = global_context.iteration_number + 1
+        iteration = context.iteration_number + 1
         logger.info(f"Running cycle {iteration}")
 
         # Run the cycle
-        cycle_details = supervisor.run_cycle(current_research_goal, global_context)
+        cycle_details = cycle_supervisor.run_cycle(research_goal, context)
 
         # Log all steps and hypotheses
         steps = cycle_details.get("steps", {})
@@ -200,7 +200,7 @@ def run_cycle() -> Tuple[str, str, str]:
         results_html = format_cycle_results(cycle_details, log_file=log_file)
 
         # Get references
-        references_html = get_references_html(cycle_details)
+        references_html = get_references_html(cycle_details, research_goal=research_goal)
 
         # Status message: surface the real cause when generation failed, instead
         # of reporting success over an empty result (issue llnl#36).
@@ -219,23 +219,52 @@ def run_cycle() -> Tuple[str, str, str]:
         else:
             status_msg = f"✅ Cycle {iteration} completed successfully! Log: {log_file}"
 
-        saved_run = save_run(
-            research_goal=current_research_goal,
-            cycle_details=cycle_details,
-            status=status_msg,
-            references_html=references_html,
-            results_html=results_html,
-            log_file=log_file,
-        )
-        report_path = write_report(saved_run)
-        status_msg = f"{status_msg}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}"
-
-        return status_msg, results_html, references_html
+        return {
+            "status": status_msg,
+            "results_html": results_html,
+            "references_html": references_html,
+            "cycle_details": cycle_details,
+            "log_file": log_file,
+        }
 
     except Exception as e:
         error_msg = f"❌ Error during cycle execution: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        return error_msg, "", ""
+        return {
+            "status": error_msg,
+            "results_html": "",
+            "references_html": "",
+            "cycle_details": {"iteration": context.iteration_number + 1, "steps": {}, "errors": [error_msg]},
+            "log_file": log_file,
+        }
+
+
+def persist_cycle_result(research_goal: ResearchGoal, cycle_result: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Persist an accepted cycle result and return Gradio output values."""
+    saved_run = save_run(
+        research_goal=research_goal,
+        cycle_details=cycle_result["cycle_details"],
+        status=cycle_result["status"],
+        references_html=cycle_result["references_html"],
+        results_html=cycle_result["results_html"],
+        log_file=cycle_result["log_file"],
+    )
+    report_path = write_report(saved_run)
+    status_msg = f"{cycle_result['status']}\nRun ID: {saved_run['run_id']}\nReport: {report_file_url(report_path)}"
+    return status_msg, cycle_result["results_html"], cycle_result["references_html"]
+
+
+def run_cycle() -> Tuple[str, str, str]:
+    """Run a single research cycle with detailed step logging for debugging."""
+    global current_research_goal, global_context, supervisor
+
+    if not current_research_goal:
+        return "❌ Error: No research goal set. Please set a research goal first.", "", ""
+
+    return persist_cycle_result(
+        current_research_goal,
+        execute_cycle(current_research_goal, global_context, supervisor),
+    )
 
 
 def format_timeout_duration(timeout_seconds: float) -> str:
@@ -263,14 +292,19 @@ def run_cycle_with_progress(
     poll_seconds: float = CYCLE_PROGRESS_INTERVAL_SECONDS,
 ):
     """Run a cycle in the background and stream status updates until done or timed out."""
+    global global_context
+
     if not current_research_goal:
         yield "❌ Error: No research goal set. Please set a research goal first.", "", ""
         return
 
-    result: Dict[str, Tuple[str, str, str]] = {}
+    run_goal = current_research_goal
+    run_context = deepcopy(global_context)
+    run_supervisor = SupervisorAgent()
+    result: Dict[str, Dict[str, Any]] = {}
 
     def worker():
-        result["value"] = run_cycle()
+        result["value"] = execute_cycle(run_goal, run_context, run_supervisor)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -287,7 +321,7 @@ def run_cycle_with_progress(
             )
             timeout_html = timeout_results_html(timeout_seconds)
             saved_run = save_run(
-                research_goal=current_research_goal,
+                research_goal=run_goal,
                 cycle_details={
                     "iteration": iteration,
                     "steps": {},
@@ -314,7 +348,13 @@ def run_cycle_with_progress(
         yield status, "<p>Cycle is still running. Results will appear when the current step completes.</p>", ""
         thread.join(timeout=min(poll_seconds, max(timeout_seconds - elapsed, 0.1)))
 
-    yield result.get("value", ("❌ Error: Cycle ended without a result.", "", ""))
+    cycle_result = result.get("value")
+    if not cycle_result:
+        yield "❌ Error: Cycle ended without a result.", "", ""
+        return
+    if current_research_goal is run_goal:
+        global_context = run_context
+    yield persist_cycle_result(run_goal, cycle_result)
 
 
 def format_cycle_results(cycle_details: Dict, log_file: str = None) -> str:
@@ -596,15 +636,14 @@ def format_cycle_results(cycle_details: Dict, log_file: str = None) -> str:
     return html
 
 
-def get_references_html(cycle_details: Dict) -> str:
+def get_references_html(cycle_details: Dict, research_goal: Optional[ResearchGoal] = None) -> str:
     """Get references HTML for the cycle."""
     try:
         # Search for arXiv papers related to the research goal
-        if current_research_goal and current_research_goal.description:
+        goal = research_goal or current_research_goal
+        if goal and goal.description:
             arxiv_tool = ArxivSearchTool(max_results=5)
-            papers = arxiv_tool.search_papers(
-                query=current_research_goal.description, max_results=5, sort_by="relevance"
-            )
+            papers = arxiv_tool.search_papers(query=goal.description, max_results=5, sort_by="relevance")
 
             if papers:
                 html = "<h3>📚 Related arXiv Papers</h3>"
