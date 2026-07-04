@@ -51,6 +51,12 @@ worktree after the PR merges (`make wt-clean ISSUE=N`).
 
 ## Pull request follow-up
 
+When the user asks to create/open PRs, create **ready-for-review PRs by
+default**. Do not create draft PRs unless the user explicitly asks for a draft
+or the PR is intentionally blocked/incomplete; if you must use draft, say why
+before handing off. The goal is to avoid unnecessary friction in human review
+and merge flow.
+
 After opening a pull request, wait briefly for automated review comments from
 the `chatgpt-codex-connector` bot. Check the PR review threads/comments, address
 actionable feedback with follow-up commits when needed, rerun the relevant
