@@ -342,6 +342,7 @@ def run_cycle_with_progress(
 
         status = (
             f"⏳ Cycle {iteration} is running.\n"
+            f"Elapsed: {format_timeout_duration(elapsed)}.\n"
             "Active work: generating, reviewing, ranking, and evolving hypotheses.\n"
             f"Upper limit: {format_timeout_duration(timeout_seconds)}."
         )
