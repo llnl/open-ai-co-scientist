@@ -3,6 +3,7 @@
 # Tools resolve from ./venv when present (local dev), else from PATH (CI).
 PYTEST := $(shell test -x venv/bin/pytest && echo venv/bin/pytest || echo pytest)
 RUFF := $(shell test -x venv/bin/ruff && echo venv/bin/ruff || echo ruff)
+PYTHON := $(shell test -x venv/bin/python && echo venv/bin/python || echo python)
 VENV_PYTHON ?= python3.12
 
 run:
@@ -38,4 +39,10 @@ wt-clean:
 	git worktree remove .worktree/$(ISSUE)
 	git worktree prune
 
-.PHONY: run test test-all lint fmt wt wt-clean
+loop-once:
+	$(PYTHON) scripts/local_loop.py
+
+loop-dry-run:
+	$(PYTHON) scripts/local_loop.py --dry-run
+
+.PHONY: run test test-all lint fmt wt wt-clean loop-once loop-dry-run
