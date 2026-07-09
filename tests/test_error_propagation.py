@@ -20,6 +20,7 @@ from app.utils import classify_llm_error
         ("Error: OpenRouter API key not set.", "Missing or invalid API key"),
         ("Authentication with OpenRouter failed (401 Unauthorized).", "Missing or invalid API key"),
         ("Error: Rate limit exceeded: slow down", "Rate limited by the model provider"),
+        ("Error: Model provider timed out ('x'). Details: request timeout", "Model provider timed out"),
         ("Error: Model unavailable or delisted ('x/y'). No endpoints found", "Model unavailable or delisted"),
         ("Could not parse LLM response: Expecting value", "Model returned unparsable output"),
         ("Error: LLM model not configured.", "LLM model not configured"),
@@ -56,6 +57,15 @@ def test_generate_happy_path_returns_no_errors():
 
     assert [h.title for h in hypos] == ["H1", "H2"]
     assert errors == []
+
+
+def test_generate_uses_selected_research_goal_model():
+    payload = '[{"title": "H1", "text": "idea one"}]'
+    goal = ResearchGoal("test goal", llm_model="chosen/model:free", num_hypotheses=1)
+    with patch("app.agents.call_llm", return_value=payload) as mock_call:
+        GenerationAgent().generate_new_hypotheses(goal, ContextMemory())
+
+    assert mock_call.call_args.kwargs["model"] == "chosen/model:free"
 
 
 # --- full cycle propagates the cause to cycle_details["errors"] ---

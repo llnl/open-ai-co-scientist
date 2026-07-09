@@ -46,6 +46,15 @@ def test_generation_handles_markdown_fenced_json(monkeypatch):
     assert result == [{"title": "T", "text": "X"}]
 
 
+def test_generation_passes_selected_model_to_llm_boundary():
+    payload = '[{"title": "T", "text": "X"}]'
+    with patch("app.agents.call_llm", return_value=payload) as mock_call:
+        result = call_llm_for_generation("test goal", model="selected/model:free")
+
+    assert result == [{"title": "T", "text": "X"}]
+    assert mock_call.call_args.kwargs["model"] == "selected/model:free"
+
+
 def test_401_propagates_as_error_hypothesis(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "invalid-key")
     with patch.object(utils, "OpenAI") as mock_openai:
@@ -75,3 +84,19 @@ def test_reflection_error_returns_not_reviewed(monkeypatch):
     assert review["novelty_review"] == "Not reviewed"
     assert review["feasibility_review"] == "Not reviewed"
     assert review["references"] == []
+
+
+def test_reflection_passes_selected_model_to_llm_boundary():
+    payload = json.dumps(
+        {
+            "novelty_review": "HIGH",
+            "feasibility_review": "MEDIUM",
+            "comment": "Looks plausible.",
+            "references": [],
+        }
+    )
+    with patch("app.agents.call_llm", return_value=payload) as mock_call:
+        review = call_llm_for_reflection("some hypothesis", model="selected/model:free")
+
+    assert review["novelty_review"] == "HIGH"
+    assert mock_call.call_args.kwargs["model"] == "selected/model:free"

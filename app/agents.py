@@ -17,7 +17,9 @@ from .utils import (
 
 
 # Updated signature to accept temperature
-def call_llm_for_generation(prompt: str, num_hypotheses: int = 3, temperature: float = 0.7) -> List[Dict]:
+def call_llm_for_generation(
+    prompt: str, num_hypotheses: int = 3, temperature: float = 0.7, model: str | None = None
+) -> List[Dict]:
     """Calls LLM for generating hypotheses, handling JSON parsing."""
     logger.info(
         "LLM generation called with prompt: %s, num_hypotheses: %d, temperature: %.2f",
@@ -31,7 +33,7 @@ def call_llm_for_generation(prompt: str, num_hypotheses: int = 3, temperature: f
     )
 
     # Pass the received temperature down to the actual LLM call
-    response = call_llm(full_prompt, temperature=temperature)
+    response = call_llm(full_prompt, temperature=temperature, model=model)
     logger.info("LLM generation response: %s", response)
 
     if response.startswith("Error:") or response.startswith("Authentication with OpenRouter failed"):
@@ -61,7 +63,7 @@ def call_llm_for_generation(prompt: str, num_hypotheses: int = 3, temperature: f
 
 
 # Updated signature to accept temperature
-def call_llm_for_reflection(hypothesis_text: str, temperature: float = 0.5) -> Dict:
+def call_llm_for_reflection(hypothesis_text: str, temperature: float = 0.5, model: str | None = None) -> Dict:
     """Calls LLM for reviewing a hypothesis, handling JSON parsing."""
     logger.info("LLM reflection called with temperature: %.2f", temperature)
     prompt = (
@@ -73,7 +75,7 @@ def call_llm_for_reflection(hypothesis_text: str, temperature: float = 0.5) -> D
         f"Return the response as a JSON object with the following keys: 'novelty_review', 'feasibility_review', 'comment', 'references'."
     )
     # Pass the received temperature down to the actual LLM call
-    response = call_llm(prompt, temperature=temperature)
+    response = call_llm(prompt, temperature=temperature, model=model)
     logger.info("LLM reflection response for hypothesis: %s", response)
 
     if response.startswith("Error:"):
@@ -223,7 +225,12 @@ class GenerationAgent:
             f"Please propose {num_to_generate} novel and feasible hypotheses with rationale, avoiding duplication with existing IDs.\n"
         )
         # Pass the specific temperature and num_hypotheses
-        raw_output = call_llm_for_generation(prompt, num_hypotheses=num_to_generate, temperature=gen_temp)
+        raw_output = call_llm_for_generation(
+            prompt,
+            num_hypotheses=num_to_generate,
+            temperature=gen_temp,
+            model=research_goal.llm_model,
+        )
         new_hypos = []
         errors = []
         for idea in raw_output:
@@ -257,7 +264,7 @@ class ReflectionAgent:
             # if h.novelty_review is not None and h.feasibility_review is not None:
             #    continue
             # Pass the specific temperature
-            result = call_llm_for_reflection(h.text, temperature=reflect_temp)
+            result = call_llm_for_reflection(h.text, temperature=reflect_temp, model=research_goal.llm_model)
             h.novelty_review = result["novelty_review"]
             h.feasibility_review = result["feasibility_review"]
             # Append comment only if it's not the default error message
