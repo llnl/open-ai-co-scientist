@@ -113,7 +113,7 @@ private loop repo:
 | Tests | `pyproject.toml` excludes `integration` and `network` markers by default | `OPENROUTER_API_KEY= make test` is the canonical no-key validation. |
 | Lint/format | Ruff config and `make lint`/`make fmt` exist | Baseline is intentionally lenient and can ratchet later. |
 | Worktrees | `make wt ISSUE=N` / `make wt-clean ISSUE=N` exist | Local sessions work under `.worktree/N` on `loop/issue-N`. |
-| Local loop runner | `scripts/local_loop.py`, `make loop-once`, and `make loop-dry-run` exist | This is the MVP AI execution path; it uses local Codex/VPN auth, not GitHub-hosted AI. |
+| Local loop runner | `scripts/local_loop.py`, `make loop-once`, and `make loop-dry-run` exist | This is the manual MVP AI execution path; it uses local Codex/VPN auth, not GitHub-hosted AI. Repo-variable kill-switch enforcement is still pending before unattended use. |
 | Labels | §3 labels exist in the loop repo | Includes `loop:*`, `risk:*`, `needs-human`, `opsec:hold`, and `ci:live`. |
 | Steering | `docs/loop/GOALS.md` exists | Human-owned priorities and graduation level live there. |
 | Secrets | Public-service secrets (`OPENROUTER_*`, `HF_*`, `UPSTREAM_SYNC_TOKEN`) are scoped to GitHub jobs that need them | Internal AI/Codex auth remains local/VPN-only. |
@@ -369,7 +369,8 @@ workflow's first step checks it and exits if false; local loop runners and
 self-hosted AI jobs must also check it before claiming new issues. One click
 stops scheduled work without touching code. (A label can be deleted by
 accident; a repo variable can't be set by issue commenters — that matters,
-see §8.)
+see §8.) The current local MVP does not yet enforce this repo variable;
+adding that check is tracked as remaining Phase 2 work before unattended use.
 
 ---
 
@@ -1493,11 +1494,15 @@ to `loop:ready` or `loop:blocked` + `needs-human` after repeated failures.
 
 Remaining Phase 2 work:
 
-1. Decide whether unattended scheduling is worth it. If yes, schedule
+1. Enforce the `LOOP_ENABLED` repo variable in `scripts/local_loop.py` (or a
+   wrapper it always runs through) before claiming a `loop:ready` issue. Until
+   this lands, `make loop-once` is a manual command and the operator must check
+   the switch before running it.
+2. Decide whether unattended scheduling is worth it. If yes, schedule
    `make loop-once` with local cron/launchd, or run the same command on an
    isolated self-hosted `vpn-ai` runner. Do not run this stage on
    GitHub-hosted runners.
-2. Keep all PRs human-merged until `docs/loop/GOALS.md` records a higher
+3. Keep all PRs human-merged until `docs/loop/GOALS.md` records a higher
    graduation level.
 
 ### Phase 2.5 — UI/UX verification harness (~1–2 days) [enables §4 "Automated UI/UX verification"]
