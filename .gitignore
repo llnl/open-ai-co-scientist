@@ -8,3 +8,5 @@ results
 .worktree/
 .env
 .audit/
+.loop/
+.cache/

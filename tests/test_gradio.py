@@ -42,7 +42,10 @@ def gradio_app_module():
 
 
 def test_gradio_interface_constructs_without_network(gradio_app_module):
-    with patch.object(gradio_app_module.requests, "get", side_effect=RuntimeError("offline test")):
+    with (
+        patch.object(gradio_app_module.requests, "get", side_effect=RuntimeError("offline test")),
+        patch.object(gradio_app_module, "fetch_free_models", return_value=[]),
+    ):
         demo = gradio_app_module.create_gradio_interface()
     assert demo is not None
     # The fetch failed, so the module must have fallen back to a non-empty default model list.
@@ -67,6 +70,28 @@ def test_free_model_is_default_when_configured_model_is_not_free(gradio_app_modu
     choices = gradio_app_module.get_model_dropdown_choices(["paid/model", "free/model:free"])
 
     assert choices[0] == "free/model:free"
+
+
+def test_stale_configured_free_model_is_not_forced_as_default(gradio_app_module, monkeypatch):
+    monkeypatch.setattr(gradio_app_module, "CONFIGURED_LLM_MODEL", "delisted/model:free")
+
+    choices = gradio_app_module.get_model_dropdown_choices(["vendor/model-70b:free", "vendor/model-3b:free"])
+
+    assert choices[0] == "vendor/model-3b:free"
+    assert "delisted/model:free" not in choices
+
+
+def test_hf_spaces_model_list_uses_dynamic_free_model_cache(gradio_app_module, monkeypatch):
+    monkeypatch.setenv("SPACE_ID", "owner/space")
+    with (
+        patch.object(gradio_app_module, "fetch_free_models", return_value=["vendor/model-3b:free"]) as mock_fetch,
+        patch.object(gradio_app_module.requests, "get") as mock_get,
+    ):
+        models = gradio_app_module.fetch_available_models()
+
+    assert models == ["vendor/model-3b:free"]
+    mock_fetch.assert_called_once()
+    mock_get.assert_not_called()
 
 
 def test_run_cycle_with_progress_streams_active_status(gradio_app_module, monkeypatch, tmp_path):
@@ -97,6 +122,7 @@ def test_run_cycle_with_progress_streams_active_status(gradio_app_module, monkey
     assert any(
         "Active work: generating, reviewing, ranking, and evolving hypotheses." in update[0] for update in updates
     )
+    assert any("Elapsed:" in update[0] for update in updates)
     assert updates[-1][0].startswith("done")
     assert updates[-1][1:] == ("<p>done</p>", "<p>refs</p>")
     assert gradio_app_module.global_context.iteration_number == 1

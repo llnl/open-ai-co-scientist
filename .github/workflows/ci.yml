@@ -35,6 +35,13 @@ jobs:
       - name: Offline test suite
         run: make test
 
+      # LLNL internal networks may block OpenRouter; run this no-key live
+      # catalog check from GitHub-hosted runners instead of local make test.
+      - name: OpenRouter free-model discovery smoke
+        env:
+          OPENROUTER_API_KEY: ""
+        run: pytest -o addopts="" -m network tests/test_openrouter_live.py
+
       - name: Boot smoke
         run: |
           python -c "import app; print('app package imports OK')"
