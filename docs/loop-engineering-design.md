@@ -322,6 +322,44 @@ are trivially queryable (`gh issue list --label loop:ready`). Create these:
 | `stale-decision` | `needs-human` item ignored >30 days; loop routes around it where safe (§8.4 H11) | Watchdog/digest |
 | `opsec:hold` | Content held back from public release pending your publish/scrub/keep-private decision (§8.5) | Publication gate |
 
+**Issue state transitions.** A GitHub issue is the durable state object for
+one unit of work. During normal operation, an active issue should have at most
+one primary state label among `loop:triaged`, `loop:ready`,
+`loop:in-progress`, `loop:blocked`, and `loop:wontfix-proposed`; newly opened
+and closed issues may have none. Modifier labels such as `needs-human`,
+`meta:loop`, `stale-decision`, and `opsec:hold` can be present at the same
+time. PR labels then govern review/merge policy for the implementation branch
+linked from the issue.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Untriaged: issue opened or mirrored
+
+    Untriaged --> Triaged: local/VPN triage adds\nacceptance criteria + score\nlabel loop:triaged
+    Untriaged --> WontfixProposed: spam / duplicate / stale\nlabel loop:wontfix-proposed
+
+    WontfixProposed --> Closed: no human objection\nafter grace period
+    WontfixProposed --> Triaged: human or triage reopens\nwith acceptance criteria
+
+    Triaged --> Ready: high value + small enough\nlabel loop:ready
+    Triaged --> NeedsHuman: unclear scope / policy / spend\nadd needs-human
+    NeedsHuman --> Ready: human decision supplied\nremove needs-human
+    NeedsHuman --> Blocked: decision absent or unsafe\nto route around
+
+    Ready --> InProgress: local_loop claims issue\nlabel loop:in-progress\nbranch loop/issue-N\nworktree .worktree/N
+    InProgress --> Ready: transient failure\nattempts remain
+    InProgress --> Blocked: repeated failure or\nunderspecified work\nlabel loop:blocked + needs-human
+    Blocked --> Ready: human or later loop pass\nadds missing info
+
+    InProgress --> PullRequest: implementation pushed\nPR opened with Fixes #N\nlabel loop:auto + risk:*
+    PullRequest --> InProgress: CI or review requests changes
+    PullRequest --> Merged: CI green + review/merge policy met
+    PullRequest --> Blocked: review stalemate or\npolicy escalation
+
+    Merged --> Closed: PR merge closes issue
+    Closed --> [*]
+```
+
 **On PRs:**
 
 | Label | Meaning |
