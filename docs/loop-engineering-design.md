@@ -1,11 +1,11 @@
 # Loop Engineering Design: Autonomous Development System
 
-**Status:** Design proposal (to be implemented by Codex)
-**Author:** Claude (design) — Codex (implementation)
+**Status:** Living design; bootstrap and local implementation MVP are in place
 **Date:** 2026-07-03
-**Local-first revision:** 2026-07-09 — AI execution is local/VPN or
-self-hosted only; GitHub-hosted Actions are control-plane/deterministic gates.
-**Repo:** github.com/llnl/open-ai-co-scientist
+**Updated:** 2026-07-09 — AI execution is local/VPN or self-hosted only;
+GitHub-hosted Actions are control-plane/deterministic gates.
+**Loop repo:** github.com/chunhualiao/co-scientist-loop
+**Public upstream:** github.com/llnl/open-ai-co-scientist
 
 ---
 
@@ -74,74 +74,70 @@ keeping AI execution inside the network where it is actually authorized.
 
 ---
 
-## 2. Gap analysis: current state vs. loop-ready (audited 2026-07-03)
+## 2. Current loop-readiness baseline (updated 2026-07-09)
 
-This section is the result of an actual audit of the repo and its GitHub
-settings (via `gh api`, test inspection, and dependency review) — not
-assumptions. Each gap has an ID; the bridging plan in §9 (Phase −1 and
-Phase 0) references these IDs.
+The original 2026-07-03 audit found missing CI, tests, labels, standing
+instructions, and private-loop infrastructure. That audit is no longer the
+current state. This section records the **current baseline** so the design does
+not keep sending agents to recreate bootstrap work that already exists.
 
 ### 2.1 Definition of "loop-ready"
 
-The loop can be switched on only when **all** of these hold:
+The loop can claim implementation work only when **all** of these hold in the
+private loop repo:
 
-- **R1 — Admin control:** someone can set branch protection on `main`, add
-  Actions secrets, create repo variables, and enable auto-merge.
-- **R2 — Actions run:** GitHub Actions are enabled and a trivial workflow
-  executes on this repo (LLNL org policy permitting).
-- **R3 — Green, offline test suite:** `pytest` passes deterministically on a
+- **R1 — Admin control:** the loop repo owner can set branch protection on
+  `main`, add scoped Actions secrets, create repo variables, and enable
+  auto-merge.
+- **R2 — GitHub-safe Actions run:** deterministic/public-service workflows run
+  on GitHub-hosted Actions; AI-dependent work stays local/VPN or on an
+  isolated `vpn-ai` self-hosted runner (§1).
+- **R3 — Green, offline test suite:** `make test` passes deterministically on a
   clean machine with **no API keys and no network**.
-- **R4 — Lint baseline:** `ruff check` passes (or has a committed, agreed
-  ignore baseline), so CI failures mean something.
-- **R5 — Standing instructions:** `AGENTS.md` exists and is accurate.
+- **R4 — Lint baseline:** `make lint` passes, so CI failures mean something.
+- **R5 — Standing instructions:** `AGENTS.md` exists and accurately describes
+  the repo, commands, secret rules, and worktree protocol.
 - **R6 — Loop state machine:** labels from §3 exist; `docs/loop/GOALS.md`
   exists.
-- **R7 — Reproducible CI env:** pinned Python version and dependencies that
-  install in CI in reasonable time.
+- **R7 — Reproducible CI env:** Python/dependencies are pinned enough for CI to
+  install and run in a bounded time.
 
-### 2.2 Gaps found (evidence-based)
+### 2.2 Current status
 
-**Tier A — Blockers (loop is impossible until fixed)**
+| Area | Current state | Notes |
+|---|---|---|
+| Private loop repo | `chunhualiao/co-scientist-loop` exists, is private, and has Issues + Actions enabled | This remains the durable control plane. |
+| Public upstream | `llnl/open-ai-co-scientist` remains human-vetted only | The loop syncs outward through `UPSTREAM_SYNC_TOKEN`; internal AI auth never goes to upstream or GitHub-hosted Actions. |
+| Branch protection | Loop-repo `main` requires the `test` check and up-to-date branches | PR review remains policy-driven by risk labels; `risk:high` is human-merged. |
+| CI | `.github/workflows/ci.yml` runs `make lint` + `make test` | Offline by default. Live tests remain opt-in/public-service only. |
+| Tests | `pyproject.toml` excludes `integration` and `network` markers by default | `OPENROUTER_API_KEY= make test` is the canonical no-key validation. |
+| Lint/format | Ruff config and `make lint`/`make fmt` exist | Baseline is intentionally lenient and can ratchet later. |
+| Worktrees | `make wt ISSUE=N` / `make wt-clean ISSUE=N` exist | Local sessions work under `.worktree/N` on `loop/issue-N`. |
+| Local loop runner | `scripts/local_loop.py`, `make loop-once`, and `make loop-dry-run` exist | This is the MVP AI execution path; it uses local Codex/VPN auth, not GitHub-hosted AI. |
+| Labels | §3 labels exist in the loop repo | Includes `loop:*`, `risk:*`, `needs-human`, `opsec:hold`, and `ci:live`. |
+| Steering | `docs/loop/GOALS.md` exists | Human-owned priorities and graduation level live there. |
+| Secrets | Public-service secrets (`OPENROUTER_*`, `HF_*`, `UPSTREAM_SYNC_TOKEN`) are scoped to GitHub jobs that need them | Internal AI/Codex auth remains local/VPN-only. |
 
-| ID | Gap | Evidence | Consequence |
-|---|---|---|---|
-| **G1** | **You lack admin/maintain rights on `llnl/open-ai-co-scientist`** — you have `push` + `triage` only | `gh api repos/llnl/open-ai-co-scientist` → `"admin":false, "maintain":false` | Cannot create branch protection, add public-service Actions secrets, create the `LOOP_ENABLED` variable, or enable auto-merge. **Violates R1.** |
-| **G2** | Repo auto-merge is disabled; Actions permissions are not even readable with your token | `"allow_auto_merge":false`; `GET /actions/permissions` → HTTP 403 | Auto-merge (§6) impossible as-is; unknown whether org policy allows Actions/secrets at all. **Violates R1, R2.** |
-| **G3** | No branch protection on `main`; anyone with push can push directly | `GET /branches/main/protection` → 404 | The §6 trust boundary has no enforcement — "prompts are suggestions, branch protection is physics" currently has no physics. |
-| **G4** | No CI whatsoever | `.github/workflows/` does not exist | Nothing can gate anything. |
-| **G5** | Test suite is broken at collection time | `tests/test_api.py` does `from app.api import app` — **`app/api.py` does not exist** (removed in the FastAPI→Gradio port), and `fastapi` isn't in `requirements.txt` | `pytest` errors out before running a single test. **Violates R3.** |
+### 2.2.1 Remaining constraints and future hardening
 
-**Tier B — Test-suite debt (CI would be red or meaningless)**
-
-| ID | Gap | Evidence | Consequence |
-|---|---|---|---|
-| **G6** | `test_agents.py` makes **live OpenRouter calls** and needs a real `OPENROUTER_API_KEY` | Marked `@pytest.mark.integration`, but the marker is unregistered and nothing deselects it | CI without a key fails; CI with a key spends money per push. |
-| **G7** | `test_gradio.py`, `test_arxiv.py`, `test_similarity.py`, `test_visjs_graph.py` are print-based **scripts**, not pytest tests; `test_arxiv.py` hits the live arXiv API | `if __name__ == "__main__"` style, `print("✅ ...")`, no assertions in pytest-discoverable form for several | Pytest either skips their logic or fails on network; green/red signal is noise. |
-| **G8** | Stray non-test artifact in `tests/` | `tests/test_graph.html` | Cosmetic, but confuses collection and reviewers. |
-| **G9** | No pytest configuration and no dev dependencies | No `pytest.ini`/`pyproject.toml`; `pytest`, `ruff`, mocking libs absent from `requirements.txt`; no `requirements-dev.txt` | Markers unregistered, no default `-m "not integration"`, contributors/CI improvise. |
-
-**Tier C — Environment & tooling debt**
-
-| ID | Gap | Evidence | Consequence |
-|---|---|---|---|
-| **G10** | Heavy, unpinned dependencies | `requirements.txt` unpinned; includes `torch` + `sentence-transformers` (multi-GB install) | CI installs are slow/flaky; a resolver change can break the loop overnight. **Violates R7.** |
-| **G11** | No lint/format config | No `ruff`/`pyproject.toml` anywhere | No R4 baseline; AI-generated diffs will style-drift. |
-| **G12** | No `AGENTS.md` | Absent from repo root | Codex has no standing instructions; every `codex exec` run rediscovers conventions. **Violates R5.** |
-| **G13** | Local dev env is ahead of prod reality | Local Python is 3.14; HF Spaces / torch wheel support must be verified for the pinned CI version | Pick and pin one version (recommend 3.11 or 3.12) everywhere. |
-| **G14** | `Makefile` has only `run` | One target | No canonical `make test` / `make lint` for humans, CI, and Codex to share. |
-
-**Tier D — Backlog & process debt (loop would run on dirty fuel)**
-
-| ID | Gap | Evidence | Consequence |
-|---|---|---|---|
-| **G15** | 22 open issues, mixed quality: real bugs (#36), stale (#13, from 2025-04), spam/off-topic (#35 "Hyperreality in English literature") | `gh issue list` | Triage stage (§4) is mandatory before implementation starts. |
-| **G16** | Only default GitHub labels exist | `gh label list` | §3 state machine can't function. |
-| **G17** | No `docs/loop/GOALS.md`, no machine-readable priorities | Only prose `docs/TODO.md` | Loop has no steering input. **Violates R6.** |
+- **Public upstream permissions remain constrained.** The private loop repo is
+  the autonomy boundary; public `llnl/main` receives only human-vetted sync
+  PRs.
+- **The local/VPN AI boundary is intentional.** Do not add GitHub-hosted
+  `codex exec` jobs unless the internal-AI dependency is removed and a new
+  security review updates this document.
+- **Dependency install time can still be improved.** Heavy packages such as
+  `torch`/`sentence-transformers` are pinned, but CI/runtime performance may
+  still justify lazy imports or lighter test profiles.
+- **Higher loop stages remain planned.** Triage automation, audit trails, UX
+  judging, benchmark retros, and self-improvement stages should be added
+  incrementally through `risk:high` PRs.
 
 ### 2.3 The G1 decision — **DECIDED: Option B′ (private loop repo)**, revised 2026-07-03
 
-G1/G2/G3 are **organizational**, not technical, and they gate the entire
-design. The options considered:
+The original G1/G2/G3 blockers were **organizational**, not technical. They
+were resolved for loop development by moving autonomy into the private loop
+repo while keeping the public LLNL repo human-vetted. The options considered:
 
 - **Option A: get `maintain` or `admin` on the LLNL repo.** Requires an org
   policy conversation; the loop's secrets and automation would live inside
@@ -190,8 +186,8 @@ design. The options considered:
 
 **Roles.** The private loop repo is where *durable control-plane state* lives:
 workflows that do not need internal AI, Actions secrets for public services,
-labels, branch protection, `LOOP_ENABLED`, the pinned digest issue, and the
-`audit` branch. Its `main` is the loop's integration branch — §6's risk
+labels, branch protection, and `LOOP_ENABLED`. Future stages add the pinned
+digest issue and `audit` branch. Its `main` is the loop's integration branch — §6's risk
 classes and the §7 graduation ladder govern merges *there*. Public
 `llnl/main` is the release branch: nothing lands on it except sync branches
 you have personally reviewed and merged. The loop gets autonomy inside a blast
@@ -210,10 +206,10 @@ dependency/security scans, label bookkeeping, and public-service live smoke
 tests with explicitly provisioned external keys.
 
 **Issue flow.** Upstream issues remain the community's front door. The
-triage stage reads them cross-repo (public repo — read needs no rights)
+planned triage stage reads them cross-repo (public repo — read needs no rights)
 and mirrors actionable ones into loop-repo issues titled `[llnl#36]
-<title>`; the label state machine (§3) operates entirely on the loop
-repo's issues. Because the sync PR now lives *inside* the llnl repo, plain
+<title>`; until that stage is automated, humans may mirror issues manually. The
+label state machine (§3) operates entirely on the loop repo's issues. Because the sync PR now lives *inside* the llnl repo, plain
 `Fixes #36` lines in its description auto-close upstream issues on merge.
 Triage-proposed closures of upstream issues surface in your digest as
 suggestions — closing upstream issues stays manual.
@@ -224,8 +220,9 @@ The concise operator runbook for this path lives in
 [`docs/upstream-release-process.md`](upstream-release-process.md).
 
 - Cadence: weekly, or per-milestone when a coherent feature completes —
-  whichever comes first once there are unsynced commits. A scheduled job
-  prepares the sync branch automatically; **you are the only merge
+  whichever comes first once there are unsynced commits. The current
+  `upstream-sync.yml` workflow is manually dispatched with a version; a
+  schedule can be added later if it proves useful. **You are the only merge
   authority on the sync PR.**
 - Mechanics: the sync job pushes the loop repo's `main` to
   `llnl/open-ai-co-scientist` as branch `sync/vX.Y` (your push access) and
@@ -236,24 +233,24 @@ The concise operator runbook for this path lives in
   upstream, acceptable since loop history survives in the private PR
   record.) The token that pushes to llnl is a fine-grained PAT scoped to
   *contents:write on that one repo* — the only credential in the system
-  that can touch the public repo, used by `loop-sync.yml` alone (§8.1
-  table).
-- **Opsec on the sync branch (§8.5):** the diff you review *is* the
-  publication gate for code — but the sync job also runs the scrubber over
-  the *commit messages and any new files* headed public, and flags
-  anything suspect in the PR description before you look at it.
+  that can touch the public repo, used by `upstream-sync.yml` alone (§8.1 table).
+- **Opsec on the sync branch (§8.5):** today, the sync PR checklist makes the
+  diff you review the publication gate for code, secrets, private trails,
+  generated outputs, and local files. When `scripts/scrub.py` lands, the sync
+  job also runs the scrubber over commit messages and new files headed public
+  and flags anything suspect in the PR description before you look at it.
 - Reverse direction (public → private): if anyone commits directly to
-  `llnl/main`, a daily job merges it into the loop repo's `main` so the
-  loop never works on a stale base.
+  `llnl/main`, bring it into the loop repo before starting new loop work. A
+  daily reverse-sync job is planned but not required for the current local
+  loop MVP.
 - **Each merged sync PR is a release** (§8.4 H9): tag the upstream merge
   (`vX.Y`), release notes generated from the batch's CHANGELOG entries;
-  these tags trigger benchmark runs and gate HF deploys.
+  future benchmark/deploy gates can use these tags as release triggers.
 
-**Private-repo setup gotchas (fold into Phase −1 Step 1):**
+**Private-repo operational notes:**
 
-- Create by **mirror-push, not fork**: `gh repo create
-  chunhualiao/co-scientist-loop --private`, then `git push --mirror` from
-  a fresh clone of the llnl repo. (A fork could never be made private.)
+- The loop repo was created by **mirror-push, not fork**. Preserve that shape:
+  a GitHub fork of the public repo could never be made private.
 - **Actions minutes are metered on private repos** — the §8.3 cost retro
   tracks minutes alongside tokens; keep Playwright/UX jobs path-filtered
   and crons modest. If minutes bind, attach a **self-hosted runner**
@@ -296,17 +293,16 @@ to use that, in order of preference:
    pain — a self-hosted *runner* captures ~90% of the benefit at ~5% of
    the churn. The design keeps the door open by keeping workflows thin.
 
-**Phase −1 and Phase 0 apply to the loop repo unchanged** — every
-"requires admin" step is unblocked because you own it. Hygiene
-improvements (test fixes, CI, `AGENTS.md`) flow to the public repo through
-the normal sync PRs, human-vetted.
+**Completed loop-repo hygiene flows outward by sync PR.** Bootstrap artifacts
+(test fixes, CI, `AGENTS.md`, local-loop tooling) live first in the private
+loop repo and reach the public repo only through normal human-vetted sync PRs.
 
 ---
 
 ## 3. The state machine (labels)
 
 Labels are the loop's memory. They survive restarts, are human-visible, and
-are trivially queryable (`gh issue list --label loop:ready`). Create these:
+are trivially queryable (`gh issue list --label loop:ready`). These labels exist in the loop repo:
 
 **On issues:**
 
@@ -1004,15 +1000,17 @@ or pasted — one file to rotate, N worktrees served.
 **Leak prevention and rotation.**
 
 - GitHub's native secret scanning + push protection are free on **public**
-  repos only (§2.3), so on the private loop repo **`gitleaks` in CI is the
-  primary scanner**, not a backstop — run it on every push, including
+  repos only (§2.3), so the private loop repo needs OSS scanning rather than
+  relying on GitHub's public-repo defaults. `gitleaks` should be added in the
+  Phase 0 hardening path and run on every push, including future
   `audit`-branch commits. The public LLNL repo keeps GitHub's free push
   protection as the last line before the world.
 - The AI reviewer rubric (§4 stage 4) includes an explicit check for
   credential patterns (`sk-or-`, `sk-proj-`, etc.) in diffs, and `AGENTS.md`
   states: keys come only from the environment; never write a key into code,
-  `config.yaml`, test fixtures, or logs (the `results/` log writer must
-  redact `Authorization` headers — verify once in Phase −1 Step 2).
+  `config.yaml`, test fixtures, or logs. Existing no-key-leak tests cover the
+  app logger; future trail/scrub work must extend those fixtures to
+  `Authorization` headers and every loop-emitted surface.
 - **Rotation:** quarterly, and immediately on any suspected leak. The
   per-environment split makes rotation a 5-minute, one-zone operation.
   Track "key age" in the daily digest so rotation is prompted, not remembered.
@@ -1029,10 +1027,10 @@ trust), AI agents (the reviewer reads the implementer's trail; the retro
 reads the quarter; a debug agent replays failures), and posterity (why a
 decision was made, long after everyone's context is gone).
 
-**Storage: an orphan `audit` branch on the (private) loop repo.** Every
-trail is committed (append-only by convention: workflows only ever add
-files, and any edit to an existing trail is itself a red flag in
-`git log`) at a **permanent, stable path**:
+**Planned storage: an orphan `audit` branch on the (private) loop repo.**
+When Phase 1.5 lands, every trail is committed (append-only by convention:
+workflows/local runners only ever add files, and any edit to an existing trail
+is itself a red flag in `git log`) at a **permanent, stable path**:
 
 ```
 audit branch:
@@ -1108,7 +1106,7 @@ symptom to trail to root cause, never "re-run it and watch."
 
 - The trail writer runs the same **redaction** as the app logger (§8.1) —
   key patterns and `Authorization` headers are scrubbed at write time, and
-  the Phase −1 leak test covers trail output too.
+  the existing no-key-leak tests must be extended to cover trail output too.
 - Trails contain **untrusted content** (issue text, LLM outputs). Agents
   consuming trails treat them as data, never as instructions — same
   prompt-injection rule as issue ingestion (§8).
@@ -1130,8 +1128,8 @@ work into three cadences so it never becomes daily toil:
 carries `{model, tokens, cost, latency}` (§8.2), so cost telemetry is a
 by-product of auditability, not a second instrumentation system. A rollup
 step aggregates trails into `trails/costs/<month>.jsonl` and a cost
-dashboard page on the audit Pages site, attributed along the dimensions
-that make optimization possible:
+dashboard page in the local `.audit/` worktree, attributed along the
+dimensions that make optimization possible:
 
 - **per trust zone / key** (§8.1: dev, ci, bench, prod-hf — cross-checked
   monthly against the OpenRouter dashboard API, so trail math is verified
@@ -1205,9 +1203,9 @@ failure — an independent notification channel). If the watchdog itself
 dies, its own scheduled-run failure generates the same email. Small enough
 to be obviously correct; that's the point.
 
-**H2 — Supply chain: pinned must not become petrified.** Phase −1 pins
-dependencies; nothing yet ever updates them, and pinned-and-frozen slowly
-becomes pinned-and-vulnerable. Fix: `dependabot.yml` (weekly, grouped
+**H2 — Supply chain: pinned must not become petrified.** The bootstrap
+baseline pins dependencies; nothing yet ever updates them, and pinned-and-frozen
+slowly becomes pinned-and-vulnerable. Fix: `dependabot.yml` (weekly, grouped
 bumps) + `pip-audit` (known CVEs) and a dependency **license check**
 (allowlist — this is LLNL-branded code; license hygiene is institutional,
 not optional) in CI. The loop is the ideal consumer of dependency PRs:
@@ -1233,8 +1231,8 @@ update silently; the quarterly calibration check (§7.2) would catch drift
 up to three months late. Fix: pin exact model IDs in prompts/config, and
 treat a provider-forced model change exactly like a metric change —
 recalibrate and re-baseline (§7.2 rules) before trusting new verdicts.
-Trails already record the model per event (§8.2), so drift is auditable
-after the fact.
+Once trails land, they record the model per event (§8.2), so drift is
+auditable after the fact.
 
 **H5 — Coverage ratchet: tests must not erode one PR at a time.** AI
 implementers are good at making tests pass without adding meaningful ones,
@@ -1297,24 +1295,24 @@ internal URLs, environment dumps in error messages, PII in issue text,
 user queries, and content that's simply inappropriate to publish under an
 institutional banner. The rule: **nothing reaches a public surface without
 passing the publication gate** — and per §12 Rule 4, the gate is built
-from pieces that already exist (the redaction library, the review stage,
-the vision judge), not a new subsystem.
+from small pieces already in the design (the app redaction helper plus the
+planned review and judge stages), not a new subsystem.
 
 **The private loop repo (§2.3) collapses the egress surface.** With the
 loop's home private, day-to-day loop output (trails, transcripts, PR
 churn, digests) is no longer publication at all — the gate concentrates on
 the few paths that actually cross the public boundary. That's the main
 reason B′ was chosen: opsec by architecture first, by scrubbing second.
-The scrubber still runs on *everything* (below) — defense-in-depth, and it
-keeps all content pre-cleaned for the day it's deliberately shared — but
-fail-closed verdicts and holds now guard only true public egress:
+When `scripts/scrub.py` lands, it should run on *everything* (below) as
+defense-in-depth and keep content pre-cleaned for the day it is deliberately
+shared. Fail-closed verdicts and holds guard only true public egress:
 
 | Egress path | Public? | Gate applied |
 |---|---|---|
-| Everything inside the loop repo (PRs, trails, issues, digest) | **No** (private) | Scrubber at write time (hygiene + defense-in-depth); no hold step needed |
-| **Sync branch + PR → public LLNL repo** | **Yes** | The human-reviewed diff *is* the gate for code; sync job additionally scrubs commit messages + new files and flags suspicions in the PR description (§2.4) |
+| Everything inside the loop repo (PRs, trails, issues, digest) | **No** (private) | Future scrubber at write time for hygiene + defense-in-depth; no hold step needed |
+| **Sync branch + PR → public LLNL repo** | **Yes** | Today the human-reviewed diff and sync checklist are the gate for code; after `scripts/scrub.py` lands, the sync job also scrubs commit messages + new files and flags suspicions in the PR description (§2.4) |
 | Trail/report exported for sharing (attached to upstream PR, sent to a colleague) | **Yes** | Full gate: scrub + AI opsec verdict + `opsec:hold` on doubt |
-| Benchmark RESULTS excerpts + README claims (travel with sync PRs) | **Yes** | Scrubbed at generation; human-vetted in the sync review |
+| Benchmark RESULTS excerpts + README claims (travel with sync PRs) | **Yes** | Future scrub at generation; human-vetted in the sync review |
 | HF Space (the running demo) | **Yes** | Prod trails **never** publish (below); demo UI privacy notice |
 
 **Layer 1 — deterministic scrubber (`scripts/scrub.py`), shared
@@ -1322,9 +1320,9 @@ everywhere.** The §8.1/§8.2 redaction library grows into the single
 choke-point through which *all* loop-emitted text passes: secret patterns
 (defense-in-depth behind gitleaks), emails, absolute home paths →
 `~redacted~`, IPs/hostnames, `.env`-style assignments, and an allowlist
-for legitimately public strings (the repo URL, the Pages domain, pinned
+for legitimately public strings (repo URLs, public release URLs, pinned
 model IDs). Rules live in `docs/loop/opsec-rules.yaml` — human-owned,
-`risk:high` to change, covered by the Phase −1 leak test plus fixtures for
+`risk:high` to change, covered by no-key-leak tests plus fixtures for
 each pattern class. Deterministic scrubbing is the workhorse: cheap,
 testable, and it never gets tired.
 
@@ -1377,151 +1375,57 @@ information). Hence the gate sits at *every* egress, runs *before*
 publication, and fails **closed** (hold, don't publish) — the only gate in
 the system where blocking by default is correct.
 
+## 9. Implementation roadmap and current status
+
 Work top to bottom; each phase leaves the repo better even if you stop there.
-Phase −1 bridges the gaps audited in §2 and is written as a concrete,
-checkable task list — hand it to Codex as-is.
+The bootstrap phase below is marked complete so future agents do not repeat
+already-merged setup work. New implementation should start at the first
+incomplete phase unless `docs/loop/GOALS.md` says otherwise.
 
-### Phase −1 — Bridge the gap to loop-ready (do this first; ~1–2 days of Codex work + one human conversation)
+### Phase −1 — Bootstrap to loop-ready (**complete as of 2026-07-09**)
 
-Everything here is ordinary repo hygiene: valuable even if you never build
-the loop. Steps are ordered; each has an acceptance check.
+The original Phase −1 task list created the private loop repo and ordinary repo
+hygiene needed for any autonomous work. Do **not** recreate it. Current
+artifacts are summarized in §2.2 and include:
 
-**Step 1 — Set up the private loop repo (human, ~20 min) [G1, G2, G3]**
-Per the §2.3 decision (Option B′ — a fork can't be made private, so this
-is a detached mirror, not a fork):
-1. `gh repo create chunhualiao/co-scientist-loop --private`, then from a
-   fresh clone of the llnl repo: `git push --mirror
-   git@github.com:chunhualiao/co-scientist-loop`.
-2. In the loop repo's settings: enable auto-merge; confirm Issues +
-   Actions are on. (GitHub secret scanning is public-only — `gitleaks` in
-   CI covers this, §8.1.)
-3. Create `UPSTREAM_SYNC_TOKEN`: a fine-grained PAT scoped to
-   contents:write and pull-requests:write on `llnl/open-ai-co-scientist`
-   only, stored as a loop-repo Actions secret (used solely by
-   `upstream-sync.yml` / `loop-sync.yml`, §2.4).
-4. Repoint your local clone: `origin` → loop repo, `upstream` → LLNL repo.
-5. Later steps that say "the repo" mean the loop repo; branch protection,
-   secrets, variables, and labels are all created there.
-*Accept when:* `gh api repos/chunhualiao/co-scientist-loop --jq
-'.private and .permissions.admin'` → `true`, and a hello-world workflow
-run succeeds there.
+- private loop repo `chunhualiao/co-scientist-loop`, with `origin` pointing
+  there and `upstream` pointing to `llnl/open-ai-co-scientist`;
+- branch protection on loop-repo `main`, auto-merge enabled, and
+  `LOOP_ENABLED` defined;
+- `UPSTREAM_SYNC_TOKEN`, `OPENROUTER_API_KEY`, `OPENROUTER_BENCH_KEY`, and
+  Hugging Face deploy secrets/variables provisioned for public-service jobs;
+- green offline pytest configuration (`integration` and `network` excluded by
+  default), mocked LLM/error tests, and secret-leak tests;
+- pinned `requirements.txt`, `requirements-dev.txt`, `pyproject.toml` with
+  pytest/ruff config, and canonical `make test`, `make test-all`, `make lint`,
+  `make fmt`;
+- `AGENTS.md`, `.env.example`, `.gitignore` exclusions for `.env` and
+  `.worktree/`, loop labels, and `docs/loop/GOALS.md`;
+- `make wt`, `make wt-clean`, `scripts/local_loop.py`, `make loop-once`, and
+  `make loop-dry-run`.
 
-**Step 2 — Repair the test suite to green-offline [G5, G6, G7, G8, G9]**
-1. **Delete `tests/test_api.py`** — it targets `app/api.py`, removed in the
-   FastAPI→Gradio port. Salvage nothing; its error-propagation intent is
-   re-covered in step 2.4. Also delete `tests/test_graph.html` [G8].
-2. Add `pyproject.toml` with `[tool.pytest.ini_options]`: register markers
-   `integration` (live LLM, costs money) and `network` (free external APIs:
-   arXiv); set `addopts = "-m 'not integration and not network'"` so the
-   default run is offline. Keep `test_agents.py` as-is but ensure it's marked;
-   add `network` marks to arXiv tests.
-3. Convert the four script-style test files [G7] into real pytest tests with
-   assertions: `test_gradio.py` (imports + UI construction; no server
-   launch), `test_similarity.py`, `test_visjs_graph.py` (pure-logic, should
-   be easy), `test_arxiv.py` (split: parsing/category logic offline with
-   canned fixtures; live query marked `network`).
-4. Add new offline tests that mock OpenRouter at the `requests` boundary
-   (use `responses` or `unittest.mock.patch`): one happy-path
-   generation→parse test and one 401-error-propagation test (replaces the
-   deleted `test_api.py` coverage at the agent level).
-5. Audit the `results/` run logger and any debug output for credential
-   leakage: API keys and `Authorization` headers must never be written to
-   logs (§8.1). Add a test asserting the key doesn't appear in a captured
-   log line.
-*Accept when:* on a clean clone with `OPENROUTER_API_KEY` **unset** and
-network access irrelevant, `pytest` exits 0.
+If one of these artifacts regresses, fix the regression directly; do not treat
+Phase −1 as pending design work.
 
-**Step 3 — Pin and split dependencies [G10, G13]**
-1. Pin `requirements.txt` to known-good versions (compatible with the HF
-   Spaces runtime; pick and pin **Python 3.11 or 3.12** everywhere — verify
-   the HF Space's current runtime and match it).
-2. Create `requirements-dev.txt`: `pytest`, `ruff`, `responses`, pinned.
-3. CI-install weight: `torch`/`sentence-transformers` are multi-GB. In CI,
-   install CPU-only torch (`--index-url https://download.pytorch.org/whl/cpu`)
-   and cache pip; if install time still dominates, make the similarity
-   feature's imports lazy so a `CI_LIGHT=1` run can skip torch entirely
-   (follow-up issue, not a blocker).
-*Accept when:* fresh `pip install -r requirements.txt -r requirements-dev.txt`
-succeeds on the pinned Python; CI job (Step 5) completes in < 10 min warm.
+### Phase 0 — Loop foundation (**mostly complete; hardening remains**)
 
-**Step 4 — Lint baseline and Makefile [G11, G14]**
-1. Add `[tool.ruff]` to `pyproject.toml` (start lenient: `E`, `F`, `I`;
-   line-length matching current code). Run `ruff check --fix` +
-   `ruff format` once as a dedicated, no-logic-change PR.
-2. Extend `Makefile`: `make test` (offline suite), `make test-all`
-   (integration+network), `make lint`, `make fmt`, plus worktree helpers:
-   `make wt ISSUE=36` (`git worktree add .worktree/36 -b loop/issue-36
-   origin/main` + per-worktree venv setup + symlink the main checkout's
-   `.env` into the worktree, §8.1) and `make wt-clean ISSUE=36`
-   (`git worktree remove` + `git worktree prune`). These become the canonical
-   commands referenced by `AGENTS.md`, CI, and every loop prompt.
-3. Add `.worktree/` and `.env` to `.gitignore`; commit a `.env.example`
-   documenting public app/test variables such as `OPENROUTER_API_KEY` per
-   §8.1. Do not document or require GitHub-hosted `OPENAI_API_KEY`; internal
-   AI/Codex auth is local/VPN-only.
-4. Add a `gitleaks` (secret-scan) step to the CI job created in Step 5.
-*Accept when:* `make lint` and `make test` both exit 0 locally, and
-`make wt ISSUE=999 && make wt-clean ISSUE=999` round-trips cleanly.
+Completed baseline:
 
-**Step 5 — Minimal CI now, not later [G4]**
-Add `.github/workflows/ci.yml` immediately after Steps 2–4 land (don't wait
-for Phase 0 polish): pinned Python, cached pip, `make lint`, `make test`,
-plus boot smoke `python -c "import app"`. Trigger: `pull_request` + push to
-`main`.
-*Accept when:* CI runs green on a trivial test PR against the fork.
+1. `ci.yml` exists and runs the offline validation path (`make lint`,
+   `make test`) on PRs.
+2. Loop-repo branch protection, auto-merge, and `LOOP_ENABLED` are configured.
+3. Public-service secrets are provisioned per §8.1. Internal AI/Codex auth is
+   still local/VPN-only and must remain out of GitHub-hosted Actions.
 
-**Step 6 — Standing instructions and steering files [G12, G16, G17]**
-1. `AGENTS.md` (repo root): project map (`app/agents.py`, `app/models.py`,
-   `app/tools/`, `app.py` Gradio entry), canonical commands (`make test`,
-   `make lint`), conventions, "tests must pass offline; API keys come only
-   from the environment (§8.1) — never write one into code, fixtures, or
-   logs; never commit secrets or `results/`", link to `docs/loop/GOALS.md`.
-   Include the worktree
-   protocol: *"When working on issue N locally, work inside the worktree
-   `.worktree/N` on branch `loop/issue-N` (create with `make wt ISSUE=N` if
-   absent); never work directly on `main`'s checkout; never modify files
-   outside your own worktree; remove the worktree after the PR merges."*
-2. `scripts/setup_labels.sh` with `gh label create` for every §3 label; run it.
-3. `docs/loop/GOALS.md`: seed with north star ("stable public demo; persistent
-   storage next"), top-3 themes from `docs/TODO.md`, non-goals, and
-   `graduation-level: 0`.
-*Accept when:* files exist, labels visible in `gh label list`, and a fresh
-`codex exec "run the test suite"` succeeds using only `AGENTS.md` guidance.
+Remaining Phase 0 hardening should land as normal `risk:high` PRs when useful:
 
-**Step 7 — One-time backlog scrub (human, 30 min) [G15]**
-Before the automated triage ever runs, close the obvious dead weight on the
-upstream tracker yourself (#35 spam; #13 if stale), then hand-pick 2–3
-well-scoped issues (e.g. #36), mirror them into the fork as
-`[llnl#36] <title>` issues (§2.4), and label them `loop:ready`. Starting the
-loop on known-good fuel makes its first PRs reviewable evidence of quality
-rather than noise.
-
-**Phase −1 exit criteria = R1–R7 from §2.1 all true.** Verify each explicitly
-before starting Phase 1.
-
-### Phase 0 — Loop foundation (~half a day, after Phase −1)
-
-1. Harden `ci.yml` from Phase −1 Step 5 if needed (concurrency cancellation,
-   artifact upload of test logs for the reviewer stage to read).
-2. **Human, once (on the loop repo):** enable branch protection on its
-   `main` (require CI check, require PRs, require up-to-date branches, no
-   force pushes) and create the `LOOP_ENABLED=true` repo variable
-   (auto-merge was enabled in Phase −1 Step 1).
-3. **Human, once — provision keys per §8.1:** in the OpenRouter dashboard
-   create `or-ci` (hard ~$5/month limit), `or-bench` (~$10/month limit,
-   §7.1), and `or-prod-hf` (demo budget) as separate keys; add
-   `OPENROUTER_API_KEY` (= `or-ci`) and `OPENROUTER_BENCH_KEY` (= `or-bench`)
-   as Actions secrets only for public-service jobs; set `or-prod-hf` as the HF
-   Space secret. Keep local/internal AI auth and personal `or-dev` only in the
-   local environment (for example `~/.env` or Codex's local auth store), not in
-   GitHub-hosted Actions.
-4. **CI hardening (§8.4):** add `bandit` + `semgrep` and `pip-audit`
-   steps [H3, H2] (CodeQL is public-repo-only, §2.3); add
-   `.github/dependabot.yml` (weekly, grouped) + license allowlist check
-   [H2]; add the diff-coverage (≥80%) + total-coverage ratchet [H5]; adopt
-   the flake retry-then-quarantine policy [H6]; add the hostile-input
-   escaping test for HTML reports [H3]. Also set "require branches up to
-   date" in the branch-protection rule from item 2 (§6).
+1. Add CI concurrency cancellation and artifact upload of test logs for reviewer
+   stages.
+2. Add `gitleaks`, `bandit` + `semgrep` + `pip-audit` [H3, H2],
+   `.github/dependabot.yml` (weekly, grouped), a license allowlist check [H2],
+   diff-coverage/coverage
+   ratchets [H5], and flake retry-then-quarantine policy [H6].
+3. Add hostile-input escaping tests for future HTML reports [H3].
 
 ### Phase 1 — Local triage loop (~1 day; low risk, high immediate value)
 
@@ -1552,8 +1456,8 @@ before starting Phase 1.
 4. Instrument the app: replace ad-hoc `results/app_log_*.txt` writes with
    structured JSONL traces (every LLM call: prompt, response, model,
    tokens, cost, latency; agent decisions; Elo updates) + HTML run report
-   (doubles as issue #32, shareable run URLs). Extend the Phase −1 leak
-   test to trail output.
+   (doubles as issue #32, shareable run URLs). Extend the existing
+   no-key-leak tests to trail output.
 5. Add the cross-linking rule to `AGENTS.md` and all loop prompts: every
    claim carries its trail URL; PR bodies link implement/review trails.
 6. Cost rollup (§8.3): `scripts/cost_rollup.py` aggregates trail costs
@@ -1578,18 +1482,23 @@ before starting Phase 1.
 access to code — the flight recorder is installed before the first flight,
 so there is no era of "early loop activity we can't audit."
 
-### Phase 2 — Local implement + PR loop (~2 days)
+### Phase 2 — Local implement + PR loop (**MVP complete; unattended mode pending**)
 
-1. `docs/loop/prompts/plan.md`, `docs/loop/prompts/implement.md`, and
-   `scripts/local_loop.py` / `make loop-once`.
-2. Local runner behavior: concurrency guard; select `loop:ready` → claim
-   `loop:in-progress` → plan → implement → validate → commit → push → ready
-   PR; on failure, comment attempt details and relabel to `loop:ready` or
-   `loop:blocked` + `needs-human` after repeated failures.
-3. Optional unattended mode: schedule `make loop-once` with local cron/launchd,
-   or run the same command on an isolated self-hosted `vpn-ai` runner. Do not
-   run this stage on GitHub-hosted runners.
-4. All PRs human-merged at this point (Level 0).
+The local implementation MVP exists: `docs/loop/prompts/plan.md`,
+`docs/loop/prompts/implement.md`, `scripts/local_loop.py`, `make loop-once`,
+and `make loop-dry-run`. It already performs the core loop: select
+`loop:ready` → claim `loop:in-progress` → plan → implement → validate →
+commit → push → ready PR; on failure, it comments attempt details and relabels
+to `loop:ready` or `loop:blocked` + `needs-human` after repeated failures.
+
+Remaining Phase 2 work:
+
+1. Decide whether unattended scheduling is worth it. If yes, schedule
+   `make loop-once` with local cron/launchd, or run the same command on an
+   isolated self-hosted `vpn-ai` runner. Do not run this stage on
+   GitHub-hosted runners.
+2. Keep all PRs human-merged until `docs/loop/GOALS.md` records a higher
+   graduation level.
 
 ### Phase 2.5 — UI/UX verification harness (~1–2 days) [enables §4 "Automated UI/UX verification"]
 
@@ -1684,83 +1593,81 @@ so there is no era of "early loop activity we can't audit."
 
 ---
 
-## 10. File inventory (what exists when fully implemented)
+## 10. File inventory (current vs. planned)
+
+This inventory is both a map and a **complexity ceiling** (§12 Rule 4). Planned
+items should appear only when their phase lands; adding anything beyond this
+list requires retiring something or amending this doc.
+
+**Current baseline (exists now):**
 
 ```
-AGENTS.md                          # Codex's standing instructions (repo root)
+AGENTS.md                          # standing instructions and worktree protocol
+requirements.txt                   # pinned app/runtime deps
 requirements-dev.txt               # pytest, ruff, responses/mock deps
-.env.example                       # documents required env vars; real .env gitignored
-scripts/setup_labels.sh            # one-shot label creation
-scripts/local_loop.py              # local/VPN loop runner: select → claim →
-                                   # plan → implement → validate → PR
+pyproject.toml                     # pytest markers/defaults + ruff config
+.env.example                       # public app/test env template; real .env gitignored
+Makefile                           # test/lint/fmt + wt/wt-clean + loop-once helpers
+scripts/local_loop.py              # local/VPN runner: select → claim → plan →
+                                   # implement → validate → PR
+scripts/prepare_upstream_release.py # upstream sync PR body/release helper
+.worktree/                         # gitignored; one worktree per in-flight issue
+  <issue-number>/                  # e.g. .worktree/37 on branch loop/issue-37
+docs/loop/
+  GOALS.md                         # human-owned steering file + graduation level
+  prompts/
+    plan.md  implement.md          # current local-loop prompts
+.github/workflows/
+  ci.yml                           # GitHub-safe lint + offline tests
+  huggingface-deploy.yml           # public-service deploy workflow
+  upstream-sync.yml                # opens private→public sync PRs (§2.4)
+```
+
+**Planned loop expansion (add incrementally through `risk:high` PRs):**
+
+```
 scripts/local_triage.py            # optional local/VPN issue triage runner
 scripts/trail.py                   # JSONL trail emitter w/ redaction (§8.2)
 scripts/trail_render.py            # JSONL → self-contained report.html + index
-scripts/scrub.py                   # publication-gate scrubber, single choke-point
-                                   # for ALL loop-emitted text (§8.5)
-Makefile                           # test/lint/fmt + wt/wt-clean worktree helpers
-.worktree/                         # gitignored; one worktree per in-flight issue
-  <issue-number>/                  # e.g. .worktree/36 on branch loop/issue-36
+scripts/cost_rollup.py             # trail cost aggregation (§8.3)
+scripts/scrub.py                   # publication-gate scrubber (§8.5)
 tests/ui/
   test_journey.py                  # Playwright canonical-journey walk (U1/U2)
 benchmarks/
   goals.yaml                       # fixed research-goal set (comparable across runs)
-  run_benchmark.py  judge.py       # arms A/B0/B1 runner + blind cross-family judging
+  run_benchmark.py  judge.py       # arms A/B0/B1 runner + blind judging
   manual/                          # quarterly ChatGPT Pro deep-research exports (B2)
 docs/benchmarks/
   RESULTS.md                       # win-rate table + trends; feeds README section
 docs/loop/
-  GOALS.md                         # human-owned steering file + graduation level
-  METRICS.md                       # north star (UVR) + driver/guardrail metrics,
-                                   # versioned; changes always risk:high (§7.2)
-  opsec-rules.yaml                 # scrub patterns + allowlist + never-publish
-                                   # policy; human-owned, risk:high (§8.5)
-  ux-baselines/                    # golden screenshots (checkpoint × viewport);
-                                   # changes always risk:medium+, human-merged
+  METRICS.md                       # UVR + driver/guardrail metrics (§7.2)
+  opsec-rules.yaml                 # scrub patterns + allowlist + never-publish policy
+  ux-baselines/                    # golden screenshots (checkpoint × viewport)
   prompts/
-    triage.md  plan.md  implement.md  review.md
-    ux-judge.md  bench-judge.md  retro.md         # judge prompts pin approved
-                                                   # local/self-hosted backends (H4)
+    triage.md  review.md  ux-judge.md  bench-judge.md  retro.md
 .github/
   dependabot.yml                   # weekly grouped dependency bumps (§8.4 H2)
 .github/workflows/
-  ci.yml                           # lint + mocked tests + boot smoke + coverage
-                                   # ratchet + CodeQL/bandit/pip-audit/gitleaks
-                                   # + license check (all PRs; §8.4)
-  loop-triage-reminder.yml         # optional secretless reminder/bookkeeping;
-                                   # no internal AI access
-  loop-review.yml                  # deterministic PR bookkeeping/auto-merge
-                                   # policy only; AI review is local/self-hosted
-  loop-ux.yml                      # artifact bookkeeping only unless running
-                                   # on self-hosted vpn-ai runner
-  loop-benchmark.yml               # public/OpenRouter-only benchmark arms, or
-                                   # self-hosted vpn-ai internal-AI jobs
-  loop-metrics-retro.yml           # reminder/bookkeeping, or self-hosted
-                                   # vpn-ai synthesis
+  loop-triage-reminder.yml         # optional secretless reminder/bookkeeping
+  loop-review.yml                  # deterministic PR bookkeeping/auto-merge policy
+  loop-ux.yml                      # artifact bookkeeping or self-hosted vpn-ai judge
+  loop-benchmark.yml               # public/OpenRouter-only or self-hosted benchmark jobs
+  loop-metrics-retro.yml           # reminder/bookkeeping or self-hosted synthesis
   loop-cost.yml                    # spend rollup; AI proposals local/self-hosted
-  loop-verify.yml                  # post-merge CI + public smoke; internal-AI
-                                   # persona walk local/self-hosted
+  loop-verify.yml                  # post-merge CI + public smoke; local persona walk
   loop-backlog.yml                 # proposal reminders only unless self-hosted
-  upstream-sync.yml / loop-sync.yml # opens/refreshes fork→upstream sync PR (§2.4);
-                                   # merging it is ALWAYS human; also pulls
-                                   # upstream→fork daily; tags releases (H9)
-  loop-watchdog.yml                # secretless dead-man's switch (§8.4 H1);
-                                   # shares no code with any loop stage
+  loop-watchdog.yml                # secretless dead-man's switch (§8.4 H1)
 ```
 
-This inventory is the loop's **complexity ceiling** (§12 Rule 4): growing
-past it requires retiring something or amending this doc.
-
-Plus the orphan **`audit` branch** (§8.2):
-`trails/{loop,app,benchmarks,ux}/.../trail.jsonl + report.html` and the
-dashboard `index.html` — append-only, permanent, viewed locally via the
-`.audit/` worktree (`make audit`; gitignored like `.worktree/`).
+The orphan **`audit` branch** (§8.2) is planned, not current. Once created it
+will hold `trails/{loop,app,benchmarks,ux}/.../trail.jsonl + report.html` and
+the dashboard `index.html`, viewed locally through the gitignored `.audit/`
+worktree (`make audit`).
 
 All of the above live on the **private loop repo** (§2.4); the public LLNL
-repo carries none of the loop machinery — it receives only human-vetted
-sync branches.
+repo receives only human-vetted sync branches.
 
-## 11. Success metrics (check monthly)
+## 11. Success metrics (check monthly once the loop is operating)
 
 - **Autonomy ratio:** merged loop PRs needing zero human input ÷ all loop PRs
   (target: >50% by month 2).
@@ -1774,17 +1681,17 @@ sync branches.
 - **U3 judge precision:** fraction of `flag`/`escalate` verdicts you agree
   with — if it nags falsely, tighten the rubric; if it rubber-stamps,
   add baseline checkpoints.
-- **North star: Unique Value-add Rate** (§7.2, current version per
-  `docs/loop/METRICS.md`) with its driver metrics (win rates vs. B0/B1/B2,
+- **North star: Unique Value-add Rate** (§7.2; current version will live in
+  planned `docs/loop/METRICS.md`) with its driver metrics (win rates vs. B0/B1/B2,
   refinement delta, grounding rate) and guardrails ($/run, latency, UX
   escapes) — the project's reason-to-exist numbers; flat or declining while
   PRs merge means the loop is busy but not valuable.
 - **Judge–human calibration agreement** (§7.2 quarterly check, target ≥75%)
   — when this drifts, no other product metric can be trusted until the
   judge is fixed.
-- **Trail completeness** (§8.2): every merged PR and every digest claim
-  carries a resolving trail URL (target: 100%; a gap means a stage acted
-  off the record — treat like a failing test).
+- **Trail completeness** (§8.2, after audit trails land): every merged PR and
+  every digest claim carries a resolving trail path (target: 100%; a gap means
+  a stage acted off the record — treat like a failing test).
 - **Spend per merged PR** and **$ per UVR point** (§8.3) — unit economics;
   watch for runaway review-round loops, and for efficiency drifting the
   wrong way while headline metrics improve.
@@ -1822,17 +1729,18 @@ demands metrics from the app but exempts itself is already in the trap.
 
 **Rule 2 — Buy, don't build; the custom surface stays small.** Everything
 possible rides on stock primitives that someone else maintains: Actions,
-labels, branch protection, Dependabot, CodeQL, Pages, `gh`, Codex itself.
-The bespoke inventory is deliberately tiny — a handful of one-page prompts
-and three small scripts (§10), all under test (H8). Any proposed loop
+labels, branch protection, Dependabot/Renovate-style dependency bots, OSS
+security scanners, `gh`, git worktrees, and Codex itself. The bespoke inventory
+is deliberately small — a handful of one-page prompts and small scripts (§10),
+all under test (H8). Any proposed loop
 feature must first answer: *does a stock tool already do this?* Custom
 loop code is the highest-interest debt in the system because only you (and
 this doc) understand it.
 
 **Rule 3 — Every phase must pay for itself, and stopping is a valid
 outcome.** The §9 phases are ordered so each is independently worth having:
-Phase −1 is plain repo hygiene; triage alone de-noises the inbox; trails
-alone make debugging cheap; the UI ladder alone retires manual browser
+completed Phase −1 is plain repo hygiene; triage alone de-noises the inbox;
+trails alone make debugging cheap; the UI ladder alone retires manual browser
 checks. **Build a phase when its pain is actually felt, not because this
 document exists** — the doc is the maximal design, not a quota. Running
 permanently at Phase 2 (loop implements, you merge everything) is a
@@ -1883,6 +1791,6 @@ manual control.
 | Cost management | Continuous collection as a trail by-product; daily digest line + anomaly alarm; monthly optimization retro with human-decided, quality-validated proposals (§8.3) | Daily human cost review: toil that abundance of credits doesn't justify. Ignoring cost: unmonitored spend is unmonitored behavior, and unit economics back the §7.1 pitch. Auto-applied optimizations: quality regressions sneak in as "savings" |
 | Self-modification | Allowed only via `risk:high` human-merged PRs | Unrestricted: a loop that can edit its own gates has no gates |
 | New work generation | Proposals only; human promotes | Autonomous goal-setting: silent scope drift away from your intent |
-| Loop health monitoring | Secretless watchdog sharing no code with loop stages; slow-decay rails: coverage ratchet, flake quarantine, Dependabot/CodeQL, judge pinning, docs-freshness (§8.4) | Loop self-reporting only: the reporter as sole witness — "no news" indistinguishable from "loop dead"; per-PR gates alone: blind to month-scale decay |
+| Loop health monitoring | Secretless watchdog sharing no code with loop stages; slow-decay rails: coverage ratchet, flake quarantine, dependency/security scanning, judge pinning, docs-freshness (§8.4) | Loop self-reporting only: the reporter as sole witness — "no news" indistinguishable from "loop dead"; per-PR gates alone: blind to month-scale decay |
 | Publication safety | Fail-closed gate at every public egress: deterministic scrubber (single choke-point) + AI opsec verdict + human-owned never-publish policy; prod-demo user data never publishes (§8.5) | Trusting quality gates alone: they judge *good*, not *publishable*. Scrub-only: patterns miss judgment calls. Publish-then-delete: public information is a one-way door — caches and forks keep it alive |
 | Loop complexity | Complexity ceiling + per-phase payoff + meta-work accounting + downshift ladder + cheap exit built from durable parts (§12) | Unbounded platform-building: the loop becomes a second product that eats the first — the solution worse than the problem |
