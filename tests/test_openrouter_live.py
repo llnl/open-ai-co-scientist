@@ -3,7 +3,9 @@
 These tests query only the public /models endpoint. They do not call chat
 completions, do not require OPENROUTER_API_KEY, and should not spend money.
 They run in GitHub Actions as a focused network smoke test; the default local
-`make test` suite still excludes `network` tests.
+`make test` suite still excludes `network` tests. LLNL internal networks may
+block OpenRouter, so a local failure of this focused test is not actionable
+unless reproduced in GitHub Actions.
 """
 
 import importlib.util
