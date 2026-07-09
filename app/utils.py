@@ -1,7 +1,10 @@
+import json
 import logging
 import os
 import random
+import re
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -64,35 +67,18 @@ def classify_llm_error(error_text: str) -> str:
 
 
 # --- LLM Interaction ---
-# Curated free models tried, in order, when the primary model is unavailable
-# or delisted. Keeps the public demo working when a single free model dies
-# (issue llnl#26). Fallback candidates are fetched live from OpenRouter (the
-# source of truth for what is actually available) rather than hardcoded — a
-# static list rots as free models are delisted, which is the very failure this
-# fixes. The list below is only a last resort if the live list can't be fetched.
+# Free-model candidates are fetched from OpenRouter (the source of truth for
+# current availability) and persisted in a short-lived cache. This avoids a
+# hardcoded "preferred free model" list, which rots as OpenRouter changes its
+# free catalog, while still letting restarts work when the public models
+# endpoint is briefly unreachable.
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_MODEL_CACHE_TTL_SECONDS = int(os.getenv("CO_SCIENTIST_MODEL_CACHE_TTL_SECONDS", str(7 * 24 * 60 * 60)))
+OPENROUTER_MODEL_CACHE_PATH = os.getenv("CO_SCIENTIST_MODEL_CACHE_PATH", ".cache/openrouter_free_models.json")
 
 # Bound the number of alternative models tried when the primary is unavailable,
 # so a fully-broken OpenRouter doesn't trigger a long chain of calls.
 MAX_FALLBACK_ATTEMPTS = 4
-
-# Compact free models to prefer for the public demo. Larger free models can be
-# accurate but may not finish a multi-call cycle before the Hugging Face UI
-# timeout. The live OpenRouter list is still the source of truth: these IDs are
-# tried first only when OpenRouter reports them as currently available.
-PREFERRED_FREE_MODELS = [
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "google/gemma-3-4b-it:free",
-    "qwen/qwen3-4b:free",
-    "qwen/qwen3-8b:free",
-]
-
-# Last-resort static fallback, used only when the live model list is unreachable.
-# Kept minimal; verified members can still be delisted, so the live list wins.
-STATIC_FALLBACK_MODELS = [
-    *PREFERRED_FREE_MODELS,
-    "meta-llama/llama-3.3-70b-instruct:free",
-]
 
 # Marker prefixes identifying outcomes that a *different* model might fix, so
 # call_llm should try another candidate. Auth and missing-key/not-configured
@@ -110,18 +96,73 @@ def _recoverable_with_another_model(result: str) -> bool:
 
 # Cache of live free-model IDs (fetched lazily, only when a fallback is needed).
 _free_models_cache: Optional[List[str]] = None
+_free_models_cache_checked_at: Optional[float] = None
+_MODEL_SIZE_RE = re.compile(r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*b(?![a-z])", re.IGNORECASE)
+
+
+def _estimate_model_size_b(model_id: str) -> Optional[float]:
+    """Best-effort parameter-count estimate from dynamic model IDs/names.
+
+    OpenRouter's free model list does not expose latency. As a proxy for demo
+    responsiveness, prefer smaller parameter counts when the ID includes one
+    (for example, ``3b`` before ``70b``). Unknown sizes stay available but sort
+    after size-known models.
+    """
+    matches = [float(match) for match in _MODEL_SIZE_RE.findall(model_id or "")]
+    return min(matches) if matches else None
+
+
+def _read_cached_free_models(max_age_seconds: Optional[int] = None) -> List[str]:
+    """Read cached free-model IDs. Returns [] on missing, stale, or invalid cache."""
+    try:
+        path = Path(OPENROUTER_MODEL_CACHE_PATH)
+        payload = json.loads(path.read_text())
+        fetched_at = float(payload.get("fetched_at", 0))
+        if max_age_seconds is not None and time.time() - fetched_at > max_age_seconds:
+            return []
+        models = payload.get("models", [])
+        if not isinstance(models, list):
+            return []
+        return order_free_models_for_demo([m for m in models if isinstance(m, str)])
+    except Exception:
+        return []
+
+
+def _write_cached_free_models(models: List[str]) -> None:
+    """Persist dynamic free-model IDs for future restarts. Best effort only."""
+    try:
+        path = Path(OPENROUTER_MODEL_CACHE_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"fetched_at": time.time(), "models": order_free_models_for_demo(models)}
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    except Exception as e:
+        logger.warning("Could not write OpenRouter model cache: %s", redact_secrets(str(e)))
 
 
 def fetch_free_models(force_refresh: bool = False) -> List[str]:
     """Return the currently-available free model IDs from OpenRouter (cached).
 
-    Returns [] on any failure (network, parse) so callers fall back to the
-    static list. Never raises. The API key is used if present but not required
-    for the public models endpoint.
+    The cache refreshes after roughly a week by default. Returns a stale cache
+    on live-fetch failure if one exists; otherwise returns []. Never raises. The
+    API key is used if present but not required for the public models endpoint.
     """
-    global _free_models_cache
-    if _free_models_cache is not None and not force_refresh:
+    global _free_models_cache, _free_models_cache_checked_at
+    if (
+        _free_models_cache is not None
+        and _free_models_cache_checked_at is not None
+        and not force_refresh
+        and time.time() - _free_models_cache_checked_at <= OPENROUTER_MODEL_CACHE_TTL_SECONDS
+    ):
         return _free_models_cache
+
+    if not force_refresh:
+        cached = _read_cached_free_models(max_age_seconds=OPENROUTER_MODEL_CACHE_TTL_SECONDS)
+        if cached:
+            _free_models_cache = cached
+            _free_models_cache_checked_at = time.time()
+            logger.info("Loaded %d free models from OpenRouter cache.", len(cached))
+            return cached
+
     try:
         headers = {}
         api_key = os.getenv("OPENROUTER_API_KEY")
@@ -130,41 +171,48 @@ def fetch_free_models(force_refresh: bool = False) -> List[str]:
         resp = requests.get(OPENROUTER_MODELS_URL, headers=headers, timeout=10)
         resp.raise_for_status()
         ids = [m.get("id") for m in resp.json().get("data", []) if m.get("id")]
-        _free_models_cache = filter_free_models(sorted(ids))
+        _free_models_cache = order_free_models_for_demo(ids)
+        _free_models_cache_checked_at = time.time()
+        _write_cached_free_models(_free_models_cache)
         logger.info("Fetched %d free models from OpenRouter for fallback.", len(_free_models_cache))
         return _free_models_cache
     except Exception as e:
         logger.warning("Could not fetch live model list for fallback: %s", redact_secrets(str(e)))
+        stale = _read_cached_free_models(max_age_seconds=None)
+        if stale:
+            _free_models_cache = stale
+            _free_models_cache_checked_at = 0
+            logger.warning("Using stale OpenRouter free-model cache with %d models.", len(stale))
+            return stale
         return []
 
 
 def order_free_models_for_demo(models: List[str]) -> List[str]:
-    """Return free models with compact demo-friendly candidates first.
+    """Return dynamic free models with likely-faster compact candidates first.
 
-    ``models`` is normally OpenRouter's live list. We keep only free IDs,
-    de-duplicate while preserving input order, then move preferred compact
-    models to the front if they are present.
+    ``models`` is normally OpenRouter's live or cached list. We keep only free
+    IDs, de-duplicate them, and sort by a parameter-count estimate parsed from
+    the model ID. This keeps the public demo from preferring very large free
+    models while avoiding any hardcoded provider/model allowlist.
     """
     free_models = []
     for model in filter_free_models(models):
         if model and model not in free_models:
             free_models.append(model)
 
-    ordered = []
-    for model in PREFERRED_FREE_MODELS:
-        if model in free_models:
-            ordered.append(model)
-    for model in free_models:
-        if model not in ordered:
-            ordered.append(model)
-    return ordered
+    return sorted(
+        free_models,
+        key=lambda model: (
+            _estimate_model_size_b(model) is None,
+            _estimate_model_size_b(model) or float("inf"),
+            model,
+        ),
+    )
 
 
 def get_fallback_models(primary: Optional[str] = None) -> List[str]:
-    """Working free models to try when ``primary`` is unavailable — the live
-    OpenRouter list if reachable, else the static last resort — excluding
-    ``primary`` itself."""
-    source = order_free_models_for_demo(fetch_free_models()) or STATIC_FALLBACK_MODELS
+    """Live/cached free models to try when ``primary`` is unavailable."""
+    source = fetch_free_models()
     return [m for m in source if m and m != primary]
 
 

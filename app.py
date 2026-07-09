@@ -16,8 +16,8 @@ from app.models import ContextMemory, ResearchGoal
 from app.run_store import get_reports_dir, history_html, report_file_url, save_run, write_report
 from app.tools.arxiv_search import ArxivSearchTool
 from app.utils import (
-    PREFERRED_FREE_MODELS,
     classify_llm_error,
+    fetch_free_models,
     get_deployment_environment,
     is_huggingface_space,
     logger,
@@ -29,8 +29,8 @@ global_context = ContextMemory()
 supervisor = SupervisorAgent()
 current_research_goal: Optional[ResearchGoal] = None
 available_models: List[str] = []
-SAFE_FALLBACK_LLM_MODEL = PREFERRED_FREE_MODELS[0]
-CONFIGURED_LLM_MODEL = config.get("llm_model", SAFE_FALLBACK_LLM_MODEL)
+CONFIGURED_LLM_MODEL = config.get("llm_model", "")
+SAFE_FALLBACK_LLM_MODEL = CONFIGURED_LLM_MODEL or "-- Select Model --"
 CYCLE_TIMEOUT_SECONDS = int(os.getenv("CO_SCIENTIST_CYCLE_TIMEOUT_SECONDS", "300"))
 CYCLE_PROGRESS_INTERVAL_SECONDS = 5
 
@@ -50,34 +50,27 @@ def fetch_available_models():
     logger.info(f"Is Hugging Face Spaces: {is_hf_spaces}")
 
     try:
-        response = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
-        response.raise_for_status()
-        models_data = response.json().get("data", [])
-
-        # Extract all model IDs
-        all_models = sorted([model.get("id") for model in models_data if model.get("id")])
-
-        # Create filtered free models list with demo-friendly compact models first
-        free_models = order_free_models_for_demo(all_models)
-
         # Apply filtering based on environment
         if is_hf_spaces:
-            # Use only free models for Hugging Face Spaces
-            available_models = free_models
+            # Use only dynamically checked free models for Hugging Face Spaces.
+            available_models = fetch_free_models() or ([CONFIGURED_LLM_MODEL] if CONFIGURED_LLM_MODEL else [])
             logger.info(f"Hugging Face Spaces: Filtered to {len(available_models)} free models")
         else:
+            response = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
+            response.raise_for_status()
+            models_data = response.json().get("data", [])
+
+            # Extract all model IDs
+            all_models = sorted([model.get("id") for model in models_data if model.get("id")])
+
             # Use all models in local/development environment
             available_models = all_models
             logger.info(f"Local/Development: Using all {len(available_models)} models")
 
     except Exception as e:
         logger.error(f"Failed to fetch models from OpenRouter: {e}")
-        # Fallback to safe defaults
-        if is_hf_spaces:
-            # Use a known free model as fallback
-            available_models = [SAFE_FALLBACK_LLM_MODEL]
-        else:
-            available_models = [SAFE_FALLBACK_LLM_MODEL]
+        cached_free_models = fetch_free_models()
+        available_models = cached_free_models or ([SAFE_FALLBACK_LLM_MODEL] if SAFE_FALLBACK_LLM_MODEL else [])
 
     return available_models
 
