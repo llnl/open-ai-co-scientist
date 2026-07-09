@@ -164,7 +164,7 @@ def fetch_free_models(force_refresh: bool = False) -> List[str]:
             return cached
 
     try:
-        headers = {}
+        headers = {"User-Agent": "open-ai-co-scientist/1.0"}
         api_key = os.getenv("OPENROUTER_API_KEY")
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
