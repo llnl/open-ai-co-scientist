@@ -9,3 +9,4 @@ results
 .env
 .audit/
 .loop/
+.cache/
