@@ -10,7 +10,9 @@ from scripts.local_loop import (
     build_implement_prompt,
     build_plan_prompt,
     default_root,
+    handle_claimed_failure,
     issue_sort_key,
+    open_or_update_pr,
     parse_args,
     parse_score,
     run_codex,
@@ -41,6 +43,8 @@ class FakeRunner:
                 "capture_output": capture_output,
             }
         )
+        if args[:2] == ["git", "-C"] and args[-1] == "--show-current":
+            return SimpleNamespace(stdout="loop/issue-25\n", stderr="", returncode=0)
         return SimpleNamespace(stdout="", stderr="", returncode=0)
 
 
@@ -187,3 +191,45 @@ def test_default_root_uses_parent_checkout_when_started_inside_worktree(tmp_path
     nested.mkdir(parents=True)
 
     assert default_root(nested) == primary
+
+
+def test_open_or_update_pr_pushes_new_commit_before_returning_existing_pr(tmp_path):
+    fake = FakeRunner(json_responses=[[{"number": 30, "url": "https://github.test/pull/30"}]])
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    cfg = config(tmp_path, dry_run=False)
+
+    url = open_or_update_pr(cfg, worktree, issue(25, "Fix SSL"), "validated", fake)
+
+    assert url == "https://github.test/pull/30"
+    commands = [call["args"] for call in fake.run_calls]
+    assert ["git", "-C", str(worktree), "push", "-u", "origin", "loop/issue-25"] in commands
+    assert not any(command[:3] == ["gh", "pr", "create"] for command in commands)
+
+
+def test_handle_claimed_failure_requeues_first_failed_attempt(tmp_path):
+    fake = FakeRunner(json_responses=[{"comments": []}])
+    cfg = config(tmp_path, dry_run=False)
+
+    handle_claimed_failure(cfg, issue(25, "Fix SSL"), RuntimeError("temporary failure"), fake)
+
+    comment_call = next(call for call in fake.run_calls if call["args"][:3] == ["gh", "issue", "comment"])
+    assert "Local loop failure attempt 1" in comment_call["input_text"]
+    edit_call = next(call for call in fake.run_calls if call["args"][:3] == ["gh", "issue", "edit"])
+    assert "--remove-label" in edit_call["args"]
+    assert "loop:in-progress" in edit_call["args"]
+    assert "--add-label" in edit_call["args"]
+    assert "loop:ready" in edit_call["args"]
+
+
+def test_handle_claimed_failure_blocks_second_failed_attempt(tmp_path):
+    fake = FakeRunner(json_responses=[{"comments": [{"body": "## Local loop failure attempt 1"}]}])
+    cfg = config(tmp_path, dry_run=False)
+
+    handle_claimed_failure(cfg, issue(25, "Fix SSL"), RuntimeError("second failure"), fake)
+
+    comment_call = next(call for call in fake.run_calls if call["args"][:3] == ["gh", "issue", "comment"])
+    assert "Local loop failure attempt 2" in comment_call["input_text"]
+    edit_call = next(call for call in fake.run_calls if call["args"][:3] == ["gh", "issue", "edit"])
+    assert "loop:blocked" in edit_call["args"]
+    assert "needs-human" in edit_call["args"]

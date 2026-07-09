@@ -24,6 +24,8 @@ DEFAULT_MAX_OPEN_LOOP_PRS = 2
 PLAN_PROMPT_PATH = Path("docs/loop/prompts/plan.md")
 IMPLEMENT_PROMPT_PATH = Path("docs/loop/prompts/implement.md")
 SCORE_RE = re.compile(r"score\s*:\s*(\d+)\s*/\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+FAILURE_COMMENT_MARKER = "Local loop failure attempt"
+MAX_FAILURE_ATTEMPTS = 2
 
 
 @dataclass(frozen=True)
@@ -333,6 +335,91 @@ def comment_issue(repo: str, issue: Issue, body: str, runner: CommandRunner, *, 
     print(completed.stdout.strip())
 
 
+def sanitize_text(text: str) -> str:
+    """Redact secret-like environment values from text before comments/logs."""
+    redacted = text
+    for key, value in os.environ.items():
+        upper_key = key.upper()
+        if not value or len(value) < 8:
+            continue
+        if any(marker in upper_key for marker in ("TOKEN", "API_KEY", "SECRET", "PASSWORD")):
+            redacted = redacted.replace(value, "***REDACTED***")
+    # Defense in depth for common token prefixes if an external tool echoed one.
+    redacted = re.sub(
+        r"\b(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|sk-or-v1-[A-Za-z0-9_-]+)\b", "***REDACTED***", redacted
+    )
+    return redacted
+
+
+def failure_summary(exc: Exception) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        parts = [f"Command failed with exit code {exc.returncode}: {shlex.join(exc.cmd)}"]
+        if exc.stderr:
+            parts.append("stderr:\n" + exc.stderr.strip())
+        if exc.stdout:
+            parts.append("stdout:\n" + exc.stdout.strip())
+        return sanitize_text("\n\n".join(parts))[:4000]
+    return sanitize_text(str(exc))[:4000]
+
+
+def failure_attempt_count(repo: str, issue: Issue, runner: CommandRunner) -> int:
+    data = runner.json(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(issue.number),
+            "--repo",
+            repo,
+            "--json",
+            "comments",
+        ]
+    )
+    return sum(1 for comment in data.get("comments", []) if FAILURE_COMMENT_MARKER in str(comment.get("body") or ""))
+
+
+def handle_claimed_failure(config: LoopConfig, issue: Issue, exc: Exception, runner: CommandRunner) -> None:
+    """Comment and relabel a claimed issue after a post-claim failure.
+
+    This prevents a transient local failure from stranding the issue in
+    ``loop:in-progress`` where future local-loop runs cannot select it.
+    """
+    try:
+        attempt = failure_attempt_count(config.repo, issue, runner) + 1
+        blocked = attempt >= MAX_FAILURE_ATTEMPTS
+        next_state = "blocked as `loop:blocked` + `needs-human`" if blocked else "returned to `loop:ready`"
+        body = f"""## {FAILURE_COMMENT_MARKER} {attempt}
+
+The local loop claimed this issue but failed before opening or updating a PR.
+
+```text
+{failure_summary(exc)}
+```
+
+Next state: {next_state}.
+"""
+        comment_issue(config.repo, issue, body, runner, dry_run=False)
+        label_args = [
+            "gh",
+            "issue",
+            "edit",
+            str(issue.number),
+            "--repo",
+            config.repo,
+            "--remove-label",
+            "loop:in-progress",
+        ]
+        if blocked:
+            label_args.extend(["--add-label", "loop:blocked", "--add-label", "needs-human"])
+        else:
+            label_args.extend(["--add-label", "loop:ready"])
+        runner.run(label_args)
+    except Exception as handler_exc:  # pragma: no cover - best-effort recovery path
+        print(
+            f"Warning: failed to update issue #{issue.number} after local-loop failure: {handler_exc}", file=sys.stderr
+        )
+
+
 def validate_worktree(worktree: Path, runner: CommandRunner, *, skip_validation: bool) -> str:
     if skip_validation:
         return "Validation skipped by --skip-validation."
@@ -380,6 +467,7 @@ def open_or_update_pr(config: LoopConfig, worktree: Path, issue: Issue, validati
     branch = current_branch(worktree, runner)
     if config.skip_pr:
         return f"PR creation skipped by --skip-pr for branch `{branch}`."
+    runner.run(["git", "-C", str(worktree), "push", "-u", "origin", branch], capture_output=False)
     existing = runner.json(
         [
             "gh",
@@ -403,7 +491,6 @@ def open_or_update_pr(config: LoopConfig, worktree: Path, issue: Issue, validati
     body_path.parent.mkdir(parents=True, exist_ok=True)
     body_path.write_text(pr_body(issue, plan_path.read_text(encoding="utf-8"), validation), encoding="utf-8")
 
-    runner.run(["git", "-C", str(worktree), "push", "-u", "origin", branch], capture_output=False)
     completed = runner.run(
         [
             "gh",
@@ -448,32 +535,36 @@ def run_once(config: LoopConfig, runner: CommandRunner | None = None) -> int:
         return 0
 
     claim_issue(config, issue, runner)
-    loop_dir = worktree / ".loop"
-    loop_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        loop_dir = worktree / ".loop"
+        loop_dir.mkdir(parents=True, exist_ok=True)
 
-    plan_path = loop_dir / "plan.md"
-    run_codex(
-        config,
-        worktree,
-        prompt=build_plan_prompt(config, issue),
-        output_path=plan_path,
-        read_only=True,
-        runner=runner,
-    )
-    plan_text = plan_path.read_text(encoding="utf-8")
-    comment_issue(config.repo, issue, "## Local loop plan\n\n" + plan_text, runner, dry_run=False)
+        plan_path = loop_dir / "plan.md"
+        run_codex(
+            config,
+            worktree,
+            prompt=build_plan_prompt(config, issue),
+            output_path=plan_path,
+            read_only=True,
+            runner=runner,
+        )
+        plan_text = plan_path.read_text(encoding="utf-8")
+        comment_issue(config.repo, issue, "## Local loop plan\n\n" + plan_text, runner, dry_run=False)
 
-    run_codex(
-        config,
-        worktree,
-        prompt=build_implement_prompt(config, issue, plan_text),
-        output_path=loop_dir / "implement-last-message.md",
-        read_only=False,
-        runner=runner,
-    )
-    validation = validate_worktree(worktree, runner, skip_validation=config.skip_validation)
-    commit_changes(worktree, issue, runner)
-    pr_url = open_or_update_pr(config, worktree, issue, validation, runner)
+        run_codex(
+            config,
+            worktree,
+            prompt=build_implement_prompt(config, issue, plan_text),
+            output_path=loop_dir / "implement-last-message.md",
+            read_only=False,
+            runner=runner,
+        )
+        validation = validate_worktree(worktree, runner, skip_validation=config.skip_validation)
+        commit_changes(worktree, issue, runner)
+        pr_url = open_or_update_pr(config, worktree, issue, validation, runner)
+    except Exception as exc:
+        handle_claimed_failure(config, issue, exc, runner)
+        raise
     print(f"Local loop completed issue #{issue.number}: {pr_url}")
     return 0
 
