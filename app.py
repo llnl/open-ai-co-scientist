@@ -725,7 +725,7 @@ def create_gradio_interface():
                         num_hypotheses = gr.Slider(
                             minimum=1,
                             maximum=10,
-                            value=config.get("num_hypotheses", 2),
+                            value=config.get("num_hypotheses", 4),
                             step=1,
                             label="Hypotheses per Cycle",
                         )
@@ -765,7 +765,7 @@ def create_gradio_interface():
                 3. **Click "Run Cycle"**: The system will set your goal and immediately generate, review, rank, and evolve hypotheses in one step.
 
                 ### 💡 Tips
-                - Start with 2 hypotheses per cycle on the public free-model demo
+                - Start with 4 hypotheses per cycle on the public free-model demo
                 - Compact free models are listed first; try another recommended free model if one provider is slow
                 - Higher generation temperature = more creative ideas
                 - Lower reflection temperature = more analytical reviews

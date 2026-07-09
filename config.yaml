@@ -15,7 +15,7 @@ openrouter_base_url: "https://openrouter.ai/api/v1"
 llm_model: "meta-llama/llama-3.2-3b-instruct:free"
 
 # Number of hypotheses to generate
-num_hypotheses: 2
+num_hypotheses: 4
 
 # Per-provider request timeout. Keeps slow free endpoints from consuming the
 # whole Gradio cycle budget before fallback can try another model.
