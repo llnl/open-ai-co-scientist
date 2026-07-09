@@ -16,11 +16,12 @@ from app.models import ContextMemory, ResearchGoal
 from app.run_store import get_reports_dir, history_html, report_file_url, save_run, write_report
 from app.tools.arxiv_search import ArxivSearchTool
 from app.utils import (
+    PREFERRED_FREE_MODELS,
     classify_llm_error,
-    filter_free_models,
     get_deployment_environment,
     is_huggingface_space,
     logger,
+    order_free_models_for_demo,
 )
 
 # Global state for the Gradio app
@@ -28,7 +29,7 @@ global_context = ContextMemory()
 supervisor = SupervisorAgent()
 current_research_goal: Optional[ResearchGoal] = None
 available_models: List[str] = []
-SAFE_FALLBACK_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+SAFE_FALLBACK_LLM_MODEL = PREFERRED_FREE_MODELS[0]
 CONFIGURED_LLM_MODEL = config.get("llm_model", SAFE_FALLBACK_LLM_MODEL)
 CYCLE_TIMEOUT_SECONDS = int(os.getenv("CO_SCIENTIST_CYCLE_TIMEOUT_SECONDS", "300"))
 CYCLE_PROGRESS_INTERVAL_SECONDS = 5
@@ -56,8 +57,8 @@ def fetch_available_models():
         # Extract all model IDs
         all_models = sorted([model.get("id") for model in models_data if model.get("id")])
 
-        # Create filtered free models list
-        free_models = filter_free_models(all_models)
+        # Create filtered free models list with demo-friendly compact models first
+        free_models = order_free_models_for_demo(all_models)
 
         # Apply filtering based on environment
         if is_hf_spaces:
@@ -82,11 +83,15 @@ def fetch_available_models():
 
 
 def get_default_model_choice(models: Optional[List[str]] = None) -> str:
-    """Prefer the configured free model, then any available free model."""
+    """Prefer the configured free model when live, then a fast free model."""
     model_choices = models or available_models
-    if CONFIGURED_LLM_MODEL and ":free" in CONFIGURED_LLM_MODEL:
+    if (
+        CONFIGURED_LLM_MODEL
+        and ":free" in CONFIGURED_LLM_MODEL
+        and (not model_choices or CONFIGURED_LLM_MODEL in model_choices)
+    ):
         return CONFIGURED_LLM_MODEL
-    free_models = filter_free_models(model_choices)
+    free_models = order_free_models_for_demo(model_choices)
     if free_models:
         return free_models[0]
     return CONFIGURED_LLM_MODEL or SAFE_FALLBACK_LLM_MODEL
@@ -96,7 +101,7 @@ def get_model_dropdown_choices(models: Optional[List[str]] = None) -> List[str]:
     """Return model choices with a cost-safe default first and de-duplicated."""
     model_choices = models or available_models
     choices = [get_default_model_choice(model_choices)]
-    for model in model_choices:
+    for model in [*order_free_models_for_demo(model_choices), *model_choices]:
         if model and model not in choices:
             choices.append(model)
     return choices
@@ -720,11 +725,17 @@ def create_gradio_interface():
                         choices=get_model_dropdown_choices(),
                         value=default_model,
                         label=f"LLM Model (default: {default_model})",
-                        info="A free default model is selected when available.",
+                        info="Compact free models are recommended first so demo runs finish faster.",
                     )
 
                     with gr.Row():
-                        num_hypotheses = gr.Slider(minimum=1, maximum=10, value=3, step=1, label="Hypotheses per Cycle")
+                        num_hypotheses = gr.Slider(
+                            minimum=1,
+                            maximum=10,
+                            value=config.get("num_hypotheses", 2),
+                            step=1,
+                            label="Hypotheses per Cycle",
+                        )
                         top_k_hypotheses = gr.Slider(minimum=2, maximum=5, value=2, step=1, label="Top K for Evolution")
 
                     with gr.Row():
@@ -761,12 +772,13 @@ def create_gradio_interface():
                 3. **Click "Run Cycle"**: The system will set your goal and immediately generate, review, rank, and evolve hypotheses in one step.
 
                 ### 💡 Tips
-                - Start with 3-5 hypotheses per cycle
+                - Start with 2 hypotheses per cycle on the public free-model demo
+                - Compact free models are listed first; try another recommended free model if one provider is slow
                 - Higher generation temperature = more creative ideas
                 - Lower reflection temperature = more analytical reviews
                 - Each cycle builds on previous results
                 
-                **Note:** Since it uses the free version of Gemini, it may occasionally return zero hypotheses if rate limits are reached. Please try again in this case.
+                **Note:** Free models can be rate-limited or slow. The app will try a few free fallbacks automatically, and you can select a different recommended free model in Advanced Settings.
                 """)
 
         with gr.Tabs():

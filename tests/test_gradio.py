@@ -69,6 +69,16 @@ def test_free_model_is_default_when_configured_model_is_not_free(gradio_app_modu
     assert choices[0] == "free/model:free"
 
 
+def test_stale_configured_free_model_is_not_forced_as_default(gradio_app_module, monkeypatch):
+    preferred = gradio_app_module.PREFERRED_FREE_MODELS[0]
+    monkeypatch.setattr(gradio_app_module, "CONFIGURED_LLM_MODEL", "delisted/model:free")
+
+    choices = gradio_app_module.get_model_dropdown_choices(["z/large:free", preferred])
+
+    assert choices[0] == preferred
+    assert "delisted/model:free" not in choices
+
+
 def test_run_cycle_with_progress_streams_active_status(gradio_app_module, monkeypatch, tmp_path):
     from app.models import ContextMemory, ResearchGoal
     from app.run_store import RUNS_DIR_ENV

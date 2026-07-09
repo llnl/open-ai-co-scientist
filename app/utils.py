@@ -50,6 +50,8 @@ def classify_llm_error(error_text: str) -> str:
     # Order matters: most specific first.
     if "api key not set" in text or "401" in text or "authentication with openrouter failed" in text:
         return "Missing or invalid API key"
+    if "timed out" in text or "timeout" in text:
+        return "Model provider timed out"
     if "rate limit" in text:
         return "Rate limited by the model provider"
     if "model unavailable" in text or "no endpoints found" in text or "not a valid model" in text or "404" in text:
@@ -74,11 +76,22 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # so a fully-broken OpenRouter doesn't trigger a long chain of calls.
 MAX_FALLBACK_ATTEMPTS = 4
 
+# Compact free models to prefer for the public demo. Larger free models can be
+# accurate but may not finish a multi-call cycle before the Hugging Face UI
+# timeout. The live OpenRouter list is still the source of truth: these IDs are
+# tried first only when OpenRouter reports them as currently available.
+PREFERRED_FREE_MODELS = [
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "google/gemma-3-4b-it:free",
+    "qwen/qwen3-4b:free",
+    "qwen/qwen3-8b:free",
+]
+
 # Last-resort static fallback, used only when the live model list is unreachable.
 # Kept minimal; verified members can still be delisted, so the live list wins.
 STATIC_FALLBACK_MODELS = [
+    *PREFERRED_FREE_MODELS,
     "meta-llama/llama-3.3-70b-instruct:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
 ]
 
 # Marker prefixes identifying outcomes that a *different* model might fix, so
@@ -86,7 +99,8 @@ STATIC_FALLBACK_MODELS = [
 # errors are terminal (a different model won't help) and are NOT listed here.
 _MODEL_UNAVAILABLE_PREFIX = "Error: Model unavailable or delisted"
 _RATE_LIMIT_PREFIX = "Error: Rate limit exceeded"
-_RECOVERABLE_PREFIXES = (_MODEL_UNAVAILABLE_PREFIX, _RATE_LIMIT_PREFIX, "Error: API call failed")
+_TIMEOUT_PREFIX = "Error: Model provider timed out"
+_RECOVERABLE_PREFIXES = (_MODEL_UNAVAILABLE_PREFIX, _RATE_LIMIT_PREFIX, _TIMEOUT_PREFIX, "Error: API call failed")
 
 
 def _recoverable_with_another_model(result: str) -> bool:
@@ -124,11 +138,33 @@ def fetch_free_models(force_refresh: bool = False) -> List[str]:
         return []
 
 
+def order_free_models_for_demo(models: List[str]) -> List[str]:
+    """Return free models with compact demo-friendly candidates first.
+
+    ``models`` is normally OpenRouter's live list. We keep only free IDs,
+    de-duplicate while preserving input order, then move preferred compact
+    models to the front if they are present.
+    """
+    free_models = []
+    for model in filter_free_models(models):
+        if model and model not in free_models:
+            free_models.append(model)
+
+    ordered = []
+    for model in PREFERRED_FREE_MODELS:
+        if model in free_models:
+            ordered.append(model)
+    for model in free_models:
+        if model not in ordered:
+            ordered.append(model)
+    return ordered
+
+
 def get_fallback_models(primary: Optional[str] = None) -> List[str]:
     """Working free models to try when ``primary`` is unavailable — the live
     OpenRouter list if reachable, else the static last resort — excluding
     ``primary`` itself."""
-    source = fetch_free_models() or STATIC_FALLBACK_MODELS
+    source = order_free_models_for_demo(fetch_free_models()) or STATIC_FALLBACK_MODELS
     return [m for m in source if m and m != primary]
 
 
@@ -147,6 +183,12 @@ def _is_rate_limit(error_str: str) -> bool:
     depending on the upstream provider."""
     low = error_str.lower()
     return "429" in error_str or "rate limit" in low or "rate-limited" in low
+
+
+def _is_timeout(error_str: str) -> bool:
+    """Detect SDK, HTTP, and provider timeout messages."""
+    low = error_str.lower()
+    return "timeout" in low or "timed out" in low or "read timed out" in low
 
 
 def _attempt_model(
@@ -196,6 +238,11 @@ def _attempt_model(
                 # (they have independent rate limits) rather than waiting here.
                 logger.warning(f"Rate limited on '{model}': {error_str}")
                 return f"{_RATE_LIMIT_PREFIX} ('{model}'). Details: " + error_str
+            if _is_timeout(error_str):
+                # A slow free provider should not consume the whole 5-minute
+                # Gradio cycle budget. Move to another model immediately.
+                logger.warning(f"Provider timed out on '{model}': {error_str}")
+                return f"{_TIMEOUT_PREFIX} ('{model}'). Details: " + error_str
             logger.error(f"API call failed on '{model}' (attempt {attempt + 1}/{max_retries}): {error_str}")
             last_error_message = f"API call failed: {error_str}"
 
@@ -219,11 +266,9 @@ def call_llm(
     """Calls an LLM via OpenRouter, returning the response text.
 
     Tries the primary model (``model`` or ``config['llm_model']``) and, if it is
-    unavailable/delisted, automatically falls back to working free models
-    (issue llnl#26) so a single delisted model does not fail every run. Falls
-    back only on model-unavailable — not on auth (same key won't help) or
-    rate-limit (transient, already retried). Auth/parse/other errors and the
-    final model-unavailable error still propagate to the caller.
+    unavailable, rate-limited, or too slow, automatically falls back to working
+    free models (issue llnl#26/#32) so a single bad model does not fail every
+    run. Auth/parse/final provider errors still propagate to the caller.
     """
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -238,6 +283,7 @@ def call_llm(
         base_url=config.get("openrouter_base_url"),
         api_key=api_key,
         max_retries=0,
+        timeout=config.get("llm_request_timeout_seconds", 30),
     )
     primary = model or config.get("llm_model")
     if not primary:

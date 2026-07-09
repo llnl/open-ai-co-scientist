@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import app.utils as utils
-from app.utils import _model_candidates, call_llm, classify_llm_error
+from app.utils import _model_candidates, call_llm, classify_llm_error, order_free_models_for_demo
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +55,13 @@ def test_model_candidates_dedup_and_order():
     assert _model_candidates("a", []) == ["a"]
 
 
+def test_order_free_models_for_demo_prefers_compact_models():
+    preferred = utils.PREFERRED_FREE_MODELS[0]
+    models = ["z/large:free", "paid/model", preferred, "a/other:free", preferred]
+
+    assert order_free_models_for_demo(models) == [preferred, "z/large:free", "a/other:free"]
+
+
 # --- fetch_free_models: filtering + caching, never raises ---
 
 
@@ -74,6 +81,14 @@ def test_fetch_free_models_filters_and_caches(monkeypatch):
 def test_fetch_free_models_returns_empty_on_error(monkeypatch):
     with patch.object(utils.requests, "get", side_effect=Exception("network down")):
         assert utils.fetch_free_models() == []
+
+
+def test_get_fallback_models_orders_live_preferred_models_first(monkeypatch):
+    preferred = utils.PREFERRED_FREE_MODELS[0]
+    with patch.object(utils, "fetch_free_models", return_value=["z/large:free", preferred, "a/other:free"]):
+        fallbacks = utils.get_fallback_models(primary="selected/model:free")
+
+    assert fallbacks[:3] == [preferred, "z/large:free", "a/other:free"]
 
 
 # --- fallback behavior (explicit list) ---
@@ -204,6 +219,31 @@ def test_all_rate_limited_surfaces_clear_error(monkeypatch):
         result = call_llm("prompt", model="a:free")
     assert classify_llm_error(result) == "Rate limited by the model provider"
     assert client.chat.completions.create.call_count == 2  # primary + 1 fallback, no long retry
+
+
+def test_timed_out_primary_falls_back(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fake")
+
+    def behavior(model):
+        if model == "good:free":
+            return _ok_completion("OK AFTER TIMEOUT")
+        raise Exception("Request timed out while waiting for provider")
+
+    with patch.object(utils, "OpenAI", return_value=_client_that(behavior)):
+        result = call_llm("prompt", model="slow:free", fallback_models=["good:free"])
+    assert result == "OK AFTER TIMEOUT"
+
+
+def test_all_timed_out_surfaces_clear_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fake")
+    client = _client_that(_raise("Request timeout from provider"))
+    with (
+        patch.object(utils, "fetch_free_models", return_value=["b:free"]),
+        patch.object(utils, "OpenAI", return_value=client),
+    ):
+        result = call_llm("prompt", model="a:free")
+    assert classify_llm_error(result) == "Model provider timed out"
+    assert client.chat.completions.create.call_count == 2
 
 
 def test_generic_provider_error_also_falls_back(monkeypatch):
