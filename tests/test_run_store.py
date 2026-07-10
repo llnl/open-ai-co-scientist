@@ -1,7 +1,7 @@
 import json
 
 from app.models import ResearchGoal
-from app.run_store import history_html, list_runs, render_report, report_file_url, save_run, write_report
+from app.run_store import delete_run, history_html, list_runs, render_report, report_file_url, save_run, write_report
 
 FAKE_KEY = "sk-or-v1-THIS-FAKE-KEY-MUST-NOT-PERSIST"
 
@@ -94,6 +94,27 @@ def test_history_lists_runs_and_creates_report(tmp_path, monkeypatch):
     assert rows[0]["run_id"] == "run-history"
     assert "Build a better battery" in html
     assert "/gradio_api/file=" in html
+
+
+def test_delete_run_removes_saved_run_and_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("CO_SCIENTIST_RUNS_DIR", str(tmp_path))
+    run = save_run(
+        research_goal=ResearchGoal(description="Delete this run"),
+        cycle_details=_cycle_details(),
+        status="done",
+        references_html="<p>refs</p>",
+        results_html="<p>results</p>",
+        run_id="run-delete",
+    )
+    report_path = write_report(run)
+
+    assert (tmp_path / "runs" / "run-delete.json").exists()
+    assert report_path.exists()
+    assert delete_run("run-delete") is True
+    assert not (tmp_path / "runs" / "run-delete.json").exists()
+    assert not report_path.exists()
+    assert "Delete this run" not in history_html()
+    assert delete_run("run-delete") is False
 
 
 def test_report_handles_nullable_hypothesis_fields(tmp_path, monkeypatch):
