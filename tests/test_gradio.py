@@ -52,6 +52,44 @@ def test_gradio_interface_constructs_without_network(gradio_app_module):
     assert gradio_app_module.available_models
 
 
+def test_run_history_loads_existing_runs_and_delete_controls(gradio_app_module, monkeypatch, tmp_path):
+    from app.models import ResearchGoal
+    from app.run_store import RUNS_DIR_ENV, save_run
+
+    monkeypatch.setenv(RUNS_DIR_ENV, str(tmp_path))
+    save_run(
+        research_goal=ResearchGoal(description="Existing saved run"),
+        cycle_details={"iteration": 1, "steps": {}},
+        status="done",
+        references_html="",
+        results_html="",
+        run_id="run-existing",
+    )
+
+    with patch.object(gradio_app_module.requests, "get", side_effect=RuntimeError("offline test")):
+        demo = gradio_app_module.create_gradio_interface()
+
+    saved_runs = [
+        component
+        for component in demo.config["components"]
+        if component["type"] == "html" and component["props"].get("label") == "Saved Runs"
+    ]
+    delete_dropdowns = [
+        component
+        for component in demo.config["components"]
+        if component["type"] == "dropdown" and component["props"].get("label") == "Saved Run to Delete"
+    ]
+    delete_buttons = [
+        component
+        for component in demo.config["components"]
+        if component["type"] == "button" and component["props"].get("value") == "Delete Selected Run"
+    ]
+
+    assert "Existing saved run" in saved_runs[0]["props"]["value"]
+    assert any("run-existing" in str(choice) for choice in delete_dropdowns[0]["props"]["choices"])
+    assert delete_buttons
+
+
 def test_default_model_is_selected_and_first_choice(gradio_app_module):
     gradio_app_module.available_models = [
         "another/model",
