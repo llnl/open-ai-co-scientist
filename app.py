@@ -13,7 +13,7 @@ from app.agents import SupervisorAgent
 # Import the existing app components
 from app.config import config
 from app.models import ContextMemory, ResearchGoal
-from app.run_store import get_reports_dir, history_html, report_file_url, save_run, write_report
+from app.run_store import delete_run, get_reports_dir, history_html, list_runs, report_file_url, save_run, write_report
 from app.tools.arxiv_search import ArxivSearchTool
 from app.utils import (
     classify_llm_error,
@@ -115,6 +115,33 @@ def get_deployment_status():
         color = "blue"
 
     return status, color
+
+
+def history_run_choices() -> List[Tuple[str, str]]:
+    """Return dropdown choices for deleting saved runs."""
+    choices = []
+    for run in list_runs(limit=None):
+        goal = run.get("goal") or "Untitled goal"
+        if len(goal) > 80:
+            goal = f"{goal[:77]}..."
+        label = f"{run.get('created_at') or 'Unknown date'} — {goal} ({run.get('run_id')})"
+        choices.append((label, run.get("run_id")))
+    return choices
+
+
+def refresh_history_view() -> Tuple[str, Dict[str, Any], str]:
+    """Refresh the history table and delete-run dropdown."""
+    return history_html(), gr.update(choices=history_run_choices(), value=None), ""
+
+
+def delete_history_run(selected_run_id: Optional[str]) -> Tuple[str, str, Dict[str, Any]]:
+    """Delete the selected saved run and refresh the history display."""
+    if not selected_run_id:
+        return "Select a saved run to delete.", history_html(), gr.update(choices=history_run_choices(), value=None)
+
+    deleted = delete_run(selected_run_id)
+    message = f"Deleted saved run {selected_run_id}." if deleted else f"Saved run {selected_run_id} was not found."
+    return message, history_html(), gr.update(choices=history_run_choices(), value=None)
 
 
 def set_research_goal(
@@ -788,9 +815,18 @@ def create_gradio_interface():
                             label="References", value="<p>Related research papers will appear here.</p>"
                         )
 
-            with gr.Tab("Run History"):
+            with gr.Tab("Run History") as run_history_tab:
+                gr.Markdown("Saved runs load automatically. Use refresh if runs were changed outside this page.")
                 refresh_history_btn = gr.Button("Refresh History")
                 history_output = gr.HTML(label="Saved Runs", value=history_html())
+                with gr.Row():
+                    delete_run_dropdown = gr.Dropdown(
+                        choices=history_run_choices(),
+                        label="Saved Run to Delete",
+                        interactive=True,
+                    )
+                    delete_history_btn = gr.Button("Delete Selected Run", variant="stop")
+                delete_history_status = gr.Markdown()
 
         # Event handler: single button sets research goal and runs cycle
         def run_full_cycle(
@@ -811,9 +847,16 @@ def create_gradio_interface():
                 "<p>Starting cycle...</p>",
                 "",
                 history_html(),
+                gr.update(choices=history_run_choices(), value=None),
             )
             for status, results, references in run_cycle_with_progress():
-                yield f"{status_msg}\n\n{status}", results, references, history_html()
+                yield (
+                    f"{status_msg}\n\n{status}",
+                    results,
+                    references,
+                    history_html(),
+                    gr.update(choices=history_run_choices(), value=None),
+                )
 
         run_cycle_btn.click(
             fn=run_full_cycle,
@@ -826,10 +869,29 @@ def create_gradio_interface():
                 elo_k_factor,
                 top_k_hypotheses,
             ],
-            outputs=[status_output, results_output, references_output, history_output],
+            outputs=[status_output, results_output, references_output, history_output, delete_run_dropdown],
         )
 
-        refresh_history_btn.click(fn=history_html, inputs=[], outputs=[history_output])
+        demo.load(
+            fn=refresh_history_view,
+            inputs=[],
+            outputs=[history_output, delete_run_dropdown, delete_history_status],
+        )
+        run_history_tab.select(
+            fn=refresh_history_view,
+            inputs=[],
+            outputs=[history_output, delete_run_dropdown, delete_history_status],
+        )
+        refresh_history_btn.click(
+            fn=refresh_history_view,
+            inputs=[],
+            outputs=[history_output, delete_run_dropdown, delete_history_status],
+        )
+        delete_history_btn.click(
+            fn=delete_history_run,
+            inputs=[delete_run_dropdown],
+            outputs=[delete_history_status, history_output, delete_run_dropdown],
+        )
 
         # Example inputs
         gr.Examples(

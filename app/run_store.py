@@ -124,7 +124,28 @@ def load_run(run_id: str) -> Dict[str, Any]:
     return json.loads(get_run_path(run_id).read_text(encoding="utf-8"))
 
 
-def list_runs(limit: int = 20) -> List[Dict[str, Any]]:
+def delete_run(run_id: str) -> bool:
+    """Delete a saved run and its generated HTML report.
+
+    Returns True when the persisted run JSON existed and was removed. The report
+    file is best-effort because reports can be regenerated and may not exist.
+    """
+    if not run_id:
+        return False
+
+    safe_run_id = Path(run_id).name
+    run_path = get_run_path(safe_run_id)
+    existed = run_path.exists()
+    if not existed:
+        return False
+
+    run_path.unlink()
+    report_path = get_reports_dir() / f"{safe_run_id}.html"
+    report_path.unlink(missing_ok=True)
+    return True
+
+
+def list_runs(limit: Optional[int] = 20) -> List[Dict[str, Any]]:
     runs_dir = get_runs_dir()
     if not runs_dir.exists():
         return []
@@ -148,7 +169,10 @@ def list_runs(limit: int = 20) -> List[Dict[str, Any]]:
             }
         )
 
-    return sorted(summaries, key=lambda item: item.get("created_at", ""), reverse=True)[:limit]
+    sorted_runs = sorted(summaries, key=lambda item: item.get("created_at", ""), reverse=True)
+    if limit is None:
+        return sorted_runs
+    return sorted_runs[:limit]
 
 
 def render_report(run: Dict[str, Any]) -> str:
